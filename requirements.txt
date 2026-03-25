@@ -1,0 +1,11 @@
+pytest
+hypothesis
+numpy
+scipy
+soundfile
+librosa
+webrtcvad-wheels  # webrtcvad pre-built wheels for Windows
+# pesq  # C 컴파일러 필요 (Visual Studio Build Tools). 미설치 시 PESQ 지표는 N/A 처리됨
+pystoi
+PyQt5
+matplotlib
