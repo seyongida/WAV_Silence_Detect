@@ -348,6 +348,27 @@ Python 기반 데스크톱 애플리케이션을 모듈별로 순차 구현한�
 - [x] 13. Final Checkpoint — 전체 통합 검증
   - 모든 테스트가 통과하는지 확인한다. 테스트 실패 항목을 정리하고 다음 작업 전에 해결한다.
 
+- [x] 14. 누락 속성 테스트 보강
+  - [x] 14.1 `tests/test_silence_metrics.py` 신규 작성
+    - Property 10: 묵음 비율 범위 (silence_leakage, false_silence ∈ [0.0, 1.0])
+    - 동일 패턴 → 0, ref 전체 묵음/dif 전체 비묵음 → leakage 1.0 경계 테스트
+    - _Validates: Requirements 7.4, 7.5_
+
+  - [x] 14.2 `tests/test_analyzer_properties.py` 신규 작성
+    - Property 2: 짧은 파일 오류 반환 (ref/dif 각각 1초 미만)
+    - Property 16: 결과 객체 필수 필드 포함
+    - Property 17: 분석 결정론성 (동일 입력 → 동일 결과)
+    - Property 18: 핵심 단계 실패 시 전체 중단 (파일 없음, 잘못된 형식)
+    - Property 19: Config 검증 오류 감지 (hop_ms, vad_aggressiveness, noise_floor_percentile, min_silence_ms, silence_merge_ms)
+    - Property 20: 유효한 Config 검증 통과
+    - _Validates: Requirements 1.3, 11.4, 4.4, 12.5, 12.6_
+
+- [x] 15. 버그 수정 및 코드 품질 개선
+  - [x] 15.1 `delay.py` — `apply_delay()` shift가 신호 길이 이상일 때 전체 제로 반환 가드 추가
+  - [x] 15.2 `export.py` — `save_json()`에서 `AnalysisConfigV2` 추가 필드(residual_diff_threshold 등) JSON 포함
+  - [x] 15.3 `analyzer.py` — `_metric_safe()` 예외 발생 시 status를 `"failed"`로 구분 (기존 `"N/A"` → `"failed"`)
+  - [x] 15.4 design.md — `compute_clipping` 설명 99.5% → 99.9% 수정, AnalysisConfigV2 반영, MetricStatus "failed" 상태 반영
+
 ## Notes
 
 - `*` 표시 서브태스크는 선택적 테스트 태스크로, MVP 구현 시 건너뛸 수 있다

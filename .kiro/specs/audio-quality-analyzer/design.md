@@ -132,13 +132,25 @@ class LogPanel(QWidget):
 ### `analyzer.py` — Facade
 
 ```python
+@dataclass
+class AnalysisConfigV2(AnalysisConfig):
+    """차이 하이라이트 오버레이용 확장 Config."""
+    residual_diff_threshold: float = 0.05
+    centroid_diff_threshold_hz: float = 300.0
+    rolloff_diff_threshold_hz: float = 500.0
+
 def run_analysis(
     ref_path: str,
     dif_path: str,
     config: AnalysisConfig,
     progress_callback: Callable[[int, str], None] | None = None
 ) -> AnalysisResult:
-    """전체 분석 파이프라인을 순서대로 실행하고 AnalysisResult를 반환한다."""
+    """전체 분석 파이프라인을 순서대로 실행하고 AnalysisResult를 반환한다.
+    
+    선택적 지표(PESQ, STOI 등) 계산 실패 시:
+    - 반환값이 None이면 MetricStatus(value=None, status="N/A")
+    - 예외 발생 시 MetricStatus(value=None, status="failed", reason=...)
+    """
 
 def validate_config(config: AnalysisConfig) -> list[str]:
     """AnalysisConfig의 유효성을 검증하고 오류 메시지 목록을 반환한다.
@@ -149,6 +161,8 @@ def validate_config(config: AnalysisConfig) -> list[str]:
     - vad_aggressiveness: 0 ~ 3
     - min_silence_ms > 0
     - silence_merge_ms >= 0
+    - AnalysisConfigV2 필드: residual_diff_threshold > 0,
+      centroid_diff_threshold_hz > 0, rolloff_diff_threshold_hz > 0
 
     반환값: 오류 메시지 목록 (빈 목록이면 유효)
     """
@@ -311,7 +325,7 @@ def compute_rms_diff(ref_common: np.ndarray, dif_common: np.ndarray) -> float:
     """
 
 def compute_clipping(audio: np.ndarray) -> float:
-    """진폭이 ±1.0의 99.5% 이상인 샘플 비율(클리핑 비율)을 반환한다.
+    """진폭이 ±1.0의 99.9% 이상인 샘플 비율(클리핑 비율)을 반환한다.
     
     입력: 오디오 신호
     반환: 클리핑 비율 [0.0, 1.0]
@@ -749,6 +763,7 @@ ERR_DELAY_FAILED    = "ERR_DELAY_FAILED"
 | 파일 길이 미달 | `ERR_TOO_SHORT` | 전체 분석 중단, UI에 메시지 표시 |
 | PESQ 계산 실패 | — | `MetricStatus(value=None, status="N/A")`, 로그 기록, 분석 계속 |
 | STOI 계산 실패 | — | `MetricStatus(value=None, status="N/A")`, 로그 기록, 분석 계속 |
+| 선택적 지표 예외 | — | `MetricStatus(value=None, status="failed", reason=...)`, 로그 기록, 분석 계속 |
 | 스펙트럼 분석 실패 | — | `spectrum=None`, 로그 기록, 분석 계속 |
 | 지연 보정 실패 | `ERR_DELAY_FAILED` | 전체 분석 중단, UI에 메시지 표시 |
 

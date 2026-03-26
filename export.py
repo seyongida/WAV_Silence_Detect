@@ -44,11 +44,7 @@ def save_json(result: AnalysisResult, path: str) -> None:
     def _metric(m):
         return {"value": m.value, "status": m.status, "reason": m.reason}
 
-    data = {
-        "ref_path": result.ref_path,
-        "dif_path": result.dif_path,
-        "analysis_timestamp": result.analysis_timestamp,
-        "config": {
+    config_data = {
             "frame_ms": result.config.frame_ms,
             "hop_ms": result.config.hop_ms,
             "noise_floor_percentile": result.config.noise_floor_percentile,
@@ -57,7 +53,18 @@ def save_json(result: AnalysisResult, path: str) -> None:
             "zcr_threshold": result.config.zcr_threshold,
             "min_silence_ms": result.config.min_silence_ms,
             "silence_merge_ms": result.config.silence_merge_ms,
-        },
+        }
+    # AnalysisConfigV2 추가 필드 포함
+    for attr in ("residual_diff_threshold", "centroid_diff_threshold_hz", "rolloff_diff_threshold_hz"):
+        val = getattr(result.config, attr, None)
+        if val is not None:
+            config_data[attr] = val
+
+    data = {
+        "ref_path": result.ref_path,
+        "dif_path": result.dif_path,
+        "analysis_timestamp": result.analysis_timestamp,
+        "config": config_data,
         "snr_db": _metric(result.snr_db),
         "pesq_score": _metric(result.pesq_score),
         "stoi_score": _metric(result.stoi_score),

@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "Generate comments for commit",
+  "description": "파일이 변경될 때 실행/수동 실행",
+  "when": {
+    "type": "userTriggered"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "git dff를 하고 변경사항중 중요내용을 깔끔하게 요약해서 commit 하세요."
+  },
+  "workspaceFolderName": "WAV_Silence_Detect",
+  "shortName": "generate-commit-comments"
+}

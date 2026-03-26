@@ -89,7 +89,7 @@ def run_analysis(
         except Exception as e:
             reason = str(e)
             _warn(f"{fn.__name__} failed: {reason}")
-            return MetricStatus(value=None, status="N/A", reason=reason)
+            return MetricStatus(value=None, status="failed", reason=reason)
 
     _progress(5, "Loading files")
     ref_audio = audio_io.load_wav(ref_path)
