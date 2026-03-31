@@ -20,6 +20,13 @@ class AnalysisConfig:
     zcr_threshold: float = 0.1          # ZCR 임계값
     min_silence_ms: int = 200           # 최소 묵음 지속 시간 (ms)
     silence_merge_ms: int = 50          # 묵음 병합 간격 (ms)
+    silence_boundary_margin_ms: int = 100   # 묵음 경계 확장 마진 (ms) — 차집합 전 ref 묵음 양쪽 확장
+    dif_only_energy_threshold_db: float = -40.0  # dif-only 구간 에너지 재검증 임계값 (dB)
+    noise_loss_peak_threshold: float = 0.002     # dif 디지털 제로 판정 peak 임계값
+    noise_loss_ref_energy_db: float = -25.0      # ref 미세 잡음 판정 에너지 임계값 (dB)
+    digital_zero_peak_threshold: float = 0.002   # 디지털 제로 검출 peak 임계값
+    digital_zero_ref_energy_db: float = -30.0    # 디지털 제로 검출 시 ref 에너지 하한 (dB, 이상이면 인위적 묵음)
+    energy_drop_db: float = 20.0                 # dif-ref 에너지 드롭 임계값 (dB, 이 이상 차이나면 인위적 묵음)
 
 
 @dataclass

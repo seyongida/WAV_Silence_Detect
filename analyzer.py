@@ -140,7 +140,9 @@ def run_analysis(
 
     _progress(45, "Computing silence metrics")
     silence_metrics, false_silence_segs, leakage_segs = silence_mod.compute_silence_metrics(
-        ref_frames, dif_frames, ref_silence, dif_silence, sr, config
+        ref_frames, dif_frames, ref_silence, dif_silence, sr, config,
+        dif_audio=dif_common,
+        ref_audio=ref_common,
     )
 
     _progress(55, "Computing quality metrics")

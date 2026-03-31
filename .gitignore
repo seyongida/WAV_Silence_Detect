@@ -211,3 +211,5 @@ __marimo__/
 # 추가
 *.wav
 unused_scripts/
+*ixi*.wav
+*speaker*.wav

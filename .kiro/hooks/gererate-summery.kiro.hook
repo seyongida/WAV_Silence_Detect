@@ -8,6 +8,8 @@
   },
   "then": {
     "type": "askAgent",
-    "prompt": "이번 작업에서 변경된 내용을 확인하고, CHANGELOG.md 파일을 생성하거나 업데이트하세요. 날짜와 변경 요약을 포함해 주세요. 기존 CHANGELOG.md가 있으면 최상단에 새 항목을 추가하고, 없으면 새로 만드세요."
-  }
+    "prompt": "이번 작업에서 변경된 내용을 확인하고, CHANGELOG.md 파일을 생성하거나 업데이트하세요. 날짜와 변경 요약을 포함해 주세요. 기존 CHANGELOG.md가 있으면 최상단에 새 항목을 추가하고, 없으면 새로 만드세요.\n파일의 변경사항이 없는 경우 changelog를 작성하지 않습니다."
+  },
+  "workspaceFolderName": "WAV_Silence_Detect",
+  "shortName": "gererate-summery"
 }

@@ -1,5 +1,6 @@
 """현대적 UI의 오디오 품질 분석기 메인 윈도우."""
 
+import math
 import os
 import sys
 
@@ -557,8 +558,15 @@ class ParamPanel(QWidget):
         self._energy_margin = QDoubleSpinBox(); self._energy_margin.setRange(0, 50); self._energy_margin.setValue(10)
         self._vad_aggressiveness = QSpinBox(); self._vad_aggressiveness.setRange(0, 3); self._vad_aggressiveness.setValue(2)
         self._zcr_threshold = QDoubleSpinBox(); self._zcr_threshold.setRange(0, 1); self._zcr_threshold.setDecimals(3); self._zcr_threshold.setSingleStep(0.01); self._zcr_threshold.setValue(0.1)
-        self._min_silence_ms = QSpinBox(); self._min_silence_ms.setRange(1, 2000); self._min_silence_ms.setValue(200)
+        self._min_silence_ms = QSpinBox(); self._min_silence_ms.setRange(1, 2000); self._min_silence_ms.setValue(100)
         self._silence_merge_ms = QSpinBox(); self._silence_merge_ms.setRange(0, 1000); self._silence_merge_ms.setValue(50)
+        self._boundary_margin_ms = QSpinBox(); self._boundary_margin_ms.setRange(0, 500); self._boundary_margin_ms.setValue(100)
+        self._energy_thr_db = QDoubleSpinBox(); self._energy_thr_db.setRange(-100, 0); self._energy_thr_db.setDecimals(1); self._energy_thr_db.setSingleStep(1.0); self._energy_thr_db.setValue(-40.0)
+        self._noise_loss_peak = QDoubleSpinBox(); self._noise_loss_peak.setRange(0.0001, 0.1); self._noise_loss_peak.setDecimals(4); self._noise_loss_peak.setSingleStep(0.001); self._noise_loss_peak.setValue(0.002)
+        self._noise_loss_ref_db = QDoubleSpinBox(); self._noise_loss_ref_db.setRange(-100, 0); self._noise_loss_ref_db.setDecimals(1); self._noise_loss_ref_db.setSingleStep(1.0); self._noise_loss_ref_db.setValue(-25.0)
+        self._dz_peak = QDoubleSpinBox(); self._dz_peak.setRange(0.0001, 0.1); self._dz_peak.setDecimals(4); self._dz_peak.setSingleStep(0.001); self._dz_peak.setValue(0.002)
+        self._dz_ref_db = QDoubleSpinBox(); self._dz_ref_db.setRange(-100, 0); self._dz_ref_db.setDecimals(1); self._dz_ref_db.setSingleStep(1.0); self._dz_ref_db.setValue(-30.0)
+        self._energy_drop_db = QDoubleSpinBox(); self._energy_drop_db.setRange(5, 60); self._energy_drop_db.setDecimals(1); self._energy_drop_db.setSingleStep(1.0); self._energy_drop_db.setValue(20.0)
         self._residual_thr = QDoubleSpinBox(); self._residual_thr.setRange(0.001, 1); self._residual_thr.setDecimals(3); self._residual_thr.setValue(0.05)
         self._centroid_thr = QDoubleSpinBox(); self._centroid_thr.setRange(1, 10000); self._centroid_thr.setValue(300)
         self._rolloff_thr = QDoubleSpinBox(); self._rolloff_thr.setRange(1, 20000); self._rolloff_thr.setValue(500)
@@ -573,6 +581,13 @@ class ParamPanel(QWidget):
             ("ZCR threshold", self._zcr_threshold),
             ("Min silence (ms)", self._min_silence_ms),
             ("Silence merge (ms)", self._silence_merge_ms),
+            ("Boundary margin (ms)", self._boundary_margin_ms),
+            ("Energy thr (dB)", self._energy_thr_db),
+            ("Noise loss peak", self._noise_loss_peak),
+            ("Noise loss ref (dB)", self._noise_loss_ref_db),
+            ("DZ peak thr", self._dz_peak),
+            ("DZ ref energy (dB)", self._dz_ref_db),
+            ("Energy drop (dB)", self._energy_drop_db),
             ("Residual highlight", self._residual_thr),
             ("Centroid (Hz)", self._centroid_thr),
             ("Rolloff (Hz)", self._rolloff_thr),
@@ -596,6 +611,13 @@ class ParamPanel(QWidget):
             zcr_threshold=self._zcr_threshold.value(),
             min_silence_ms=self._min_silence_ms.value(),
             silence_merge_ms=self._silence_merge_ms.value(),
+            silence_boundary_margin_ms=self._boundary_margin_ms.value(),
+            dif_only_energy_threshold_db=self._energy_thr_db.value(),
+            noise_loss_peak_threshold=self._noise_loss_peak.value(),
+            noise_loss_ref_energy_db=self._noise_loss_ref_db.value(),
+            digital_zero_peak_threshold=self._dz_peak.value(),
+            digital_zero_ref_energy_db=self._dz_ref_db.value(),
+            energy_drop_db=self._energy_drop_db.value(),
             residual_diff_threshold=self._residual_thr.value(),
             centroid_diff_threshold_hz=self._centroid_thr.value(),
             rolloff_diff_threshold_hz=self._rolloff_thr.value(),
@@ -706,6 +728,10 @@ class SingleResultPanel(QWidget):
         self._diff_fig, self._diff_ax = plt.subplots(1, 1, figsize=(10, 2))
         self._diff_canvas = FigureCanvas(self._diff_fig)
         self._layout.addWidget(self._diff_canvas)
+
+        self._normdiff_fig, self._normdiff_ax = plt.subplots(1, 1, figsize=(10, 2))
+        self._normdiff_canvas = FigureCanvas(self._normdiff_fig)
+        self._layout.addWidget(self._normdiff_canvas)
 
         self._spec_fig, self._spec_axes = plt.subplots(2, 1, figsize=(10, 3.5), sharex=True)
         self._spec_canvas = FigureCanvas(self._spec_fig)
@@ -884,6 +910,43 @@ class SingleResultPanel(QWidget):
         self._diff_fig.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.22)
         self._diff_canvas.draw()
 
+        # 음량 정규화 잔차 (dif 음량을 ref에 맞춘 뒤 ref - dif_scaled)
+        self._normdiff_ax.cla()
+        ref_rms = np.sqrt(np.mean(ref_common ** 2))
+        dif_rms = np.sqrt(np.mean(dif_common ** 2))
+        if dif_rms > 1e-12:
+            gain = ref_rms / dif_rms
+        else:
+            gain = 1.0
+        dif_scaled = dif_common * gain
+        norm_residual = ref_common - dif_scaled
+        # 볼륨 차이를 dB로 계산 (ref 기준 dif가 얼마나 크거나 작은지)
+        if ref_rms > 1e-12 and dif_rms > 1e-12:
+            vol_diff_db = 20 * np.log10(dif_rms / ref_rms)
+        else:
+            vol_diff_db = 0.0
+        self._normdiff_ax.plot(t, norm_residual, color="#0ea5e9", linewidth=0.5)
+        mask_n = np.abs(norm_residual) >= thr
+        if len(t) > 1:
+            spans_n = self._mask_to_spans(mask_n, min_len=max(1, int(round(0.03 / dt))), merge_gap=max(0, int(round(0.02 / dt))))
+        else:
+            spans_n = []
+        for s, e in spans_n:
+            self._normdiff_ax.axvspan(float(t[s]), float(t[e - 1]), alpha=0.22, color=Colors.ERROR)
+        self._normdiff_ax.axhline(0, color=Colors.TEXT_MUTED, linewidth=0.5, alpha=0.5)
+        sign = "+" if vol_diff_db >= 0 else ""
+        # dif가 ref의 몇 배인지 (소수점 둘째 자리 올림)
+        vol_ratio = dif_rms / ref_rms if ref_rms > 1e-12 else 0.0
+        vol_ratio_ceil = math.ceil(vol_ratio * 100) / 100
+        self._normdiff_ax.set_title(
+            f"Residual – Volume Normalized (dif = {vol_ratio_ceil:.2f}× ref, {sign}{vol_diff_db:.2f} dB)",
+            fontsize=10, color=Colors.TEXT,
+        )
+        self._normdiff_ax.set_xlabel("Time (s)", fontsize=9)
+        self._normdiff_ax.set_ylabel("Amp", fontsize=9)
+        self._normdiff_fig.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.22)
+        self._normdiff_canvas.draw()
+
         # 스펙트로그램
         for ax in self._spec_axes:
             ax.cla()
@@ -935,7 +998,7 @@ class SingleResultPanel(QWidget):
 
             # 모든 시간축 차트의 x범위를 동일하게 맞춤
             max_time = t[-1] if len(t) > 0 else 0
-            for ax in [*self._waveform_ax, self._diff_ax, *self._spec_axes, *self._ts_axes]:
+            for ax in [*self._waveform_ax, self._diff_ax, self._normdiff_ax, *self._spec_axes, *self._ts_axes]:
                 ax.set_xlim(0, max_time)
         else:
             for ax in self._ts_axes:
@@ -946,11 +1009,12 @@ class SingleResultPanel(QWidget):
     def _apply_figure_margins(self):
         self._waveform_fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.13, hspace=0.30)
         self._diff_fig.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.22)
+        self._normdiff_fig.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.22)
         self._spec_fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.13, hspace=0.30)
         self._ts_fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.15, hspace=0.35)
 
     def get_figures(self) -> list:
-        return [self._waveform_fig, self._diff_fig, self._spec_fig, self._ts_fig]
+        return [self._waveform_fig, self._diff_fig, self._normdiff_fig, self._spec_fig, self._ts_fig]
 
 
 # ── 결과 컨테이너 (싱글/듀얼 전환) ────────────────────────────────────────────
@@ -1078,6 +1142,7 @@ class MainWindow(QMainWindow):
             ("JSON 저장", self._save_json, "_save_json_btn"),
             ("CSV 저장", self._save_csv, "_save_csv_btn"),
             ("PNG 저장", self._save_png, "_save_png_btn"),
+            ("HTML 저장", self._save_html, "_save_html_btn"),
         ]:
             btn = QPushButton(text)
             btn.setProperty("flat", True)
@@ -1183,6 +1248,7 @@ class MainWindow(QMainWindow):
         self._save_json_btn.setEnabled(True)
         self._save_csv_btn.setEnabled(True)
         self._save_png_btn.setEnabled(True)
+        self._save_html_btn.setEnabled(True)
 
     def _on_error(self, error_msg: str):
         self._analyze_btn.setEnabled(True)
@@ -1219,6 +1285,18 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "PNG 저장", "result.png", "PNG (*.png)")
         if path:
             export_mod.save_png(self._result_container.get_all_figures(), path)
+
+    def _save_html(self):
+        results = self._result_container.get_results()
+        if not results:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "HTML 저장", "report.html", "HTML (*.html)")
+        if path:
+            # 각 result에 대응하는 figure 리스트 구성
+            figs_per_result = [self._result_container._panel1.get_figures()]
+            if len(results) > 1:
+                figs_per_result.append(self._result_container._panel2.get_figures())
+            export_mod.save_html(results, figs_per_result, path)
 
 
 if __name__ == "__main__":

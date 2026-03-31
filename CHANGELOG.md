@@ -1,5 +1,105 @@
 # Changelog
 
+## [1.7.0] - 2026-03-31
+
+### 잡음 소실(noise loss) 필터 추가
+- dif가 디지털 제로(peak < 0.002)이고 ref가 미세 잡음(energy ≤ -30dB)인 구간을 dif-only 묵음에서 제외
+- 전송 과정에서 미세 배경 잡음이 소실된 구간을 "새로 삽입된 묵음"이 아닌 "잡음 소실"로 간주
+- `silence_metrics.py`에 `_filter_noise_loss()` 함수 추가
+- `compute_silence_metrics()`에 `ref_audio` 파라미터 추가 (하위 호환: 기본값 None)
+- `analyzer.py`에서 `ref_common` 신호를 `compute_silence_metrics`에 전달
+- `models.py`의 `AnalysisConfig`에 `noise_loss_peak_threshold`(기본 0.002), `noise_loss_ref_energy_db`(기본 -30dB) 파라미터 추가
+- GUI에 Noise loss peak, Noise loss ref (dB) 파라미터 위젯 추가
+- 디버깅용 임시 스크립트 6개 정리 삭제
+
+### 테스트
+- `tests/test_silence_boundary_energy.py`에 잡음 소실 필터 테스트 6건 추가 (총 18건)
+  - `_filter_noise_loss` 단위 테스트 5건 (dif 제로+ref 잡음 제거, dif 제로+ref 음성 유지, dif 비제로 유지, 혼합, 빈 입력)
+  - 통합 테스트 1건 (`compute_silence_metrics`에서 잡음 소실 필터 적용 검증)
+
+## [1.6.0] - 2026-03-31
+
+### dif-only 묵음 경계 오탐 제거 (방안 B + C)
+- 방안 B: ref 묵음 구간 양쪽 경계를 `silence_boundary_margin_ms`(기본 100ms)만큼 확장한 뒤 차집합 수행 → 묵음↔음성 전환부에 걸친 오탐 흡수
+- 방안 C: 차집합 후 남은 dif-only 구간의 실제 에너지를 `dif_only_energy_threshold_db`(기본 -40dB) 절대 임계값으로 재검증 → 소리가 있는 구간 제거
+- `silence_metrics.py`에 `_expand_segments()`, `_verify_energy()` 함수 추가
+- `compute_silence_metrics()`에 `dif_audio` 파라미터 추가 (하위 호환: 기본값 None)
+- `analyzer.py`에서 `dif_common` 신호를 `compute_silence_metrics`에 전달
+- `models.py`의 `AnalysisConfig`에 `silence_boundary_margin_ms`, `dif_only_energy_threshold_db` 파라미터 추가
+- GUI에 Boundary margin (ms), Energy thr (dB) 파라미터 위젯 추가
+
+### 테스트
+- `tests/test_silence_boundary_energy.py` 추가 (12건)
+  - `_expand_segments` 단위 테스트 5건 (양쪽 확장, 경계 클램핑, 겹침 병합, margin=0, 빈 입력)
+  - `_verify_energy` 단위 테스트 3건 (무음 통과, 유음 제거, 혼합)
+  - 통합 테스트 3건 (경계 오탐 제거, 정상 dif-only 유지, 에너지 재검증 제거)
+  - Hypothesis PBT 1건 (확장 구간 범위 불변 속성)
+
+## [1.5.1] - 2026-03-31
+
+### dif-only 묵음 검출 불일치 원인 분석
+- Pair1(전체 음원)에서 dif-only 묵음 수 1로 검출되나, 해당 구간만 slice한 Pair2에서는 0으로 검출되는 현상 조사
+- 원인 분석 결과 5가지 요인 식별:
+  1. **지연 보정(delay) 차이**: slice 음원은 이미 정렬된 상태인데 cross-correlation + DTW가 다른 delay를 추정하여 정렬을 깨뜨릴 수 있음
+  2. **Noise Floor 동적 임계값 변화**: 전체 음원 vs slice 구간의 에너지 분포 차이로 `noise_floor_percentile` 기반 threshold가 달라짐
+  3. **`extract_common_segment` 길이 자르기**: delay 보정 후 공통 구간 범위가 달라져 묵음 구간이 분석 범위에서 제외될 수 있음
+  4. **`min_silence_ms` (200ms) 경계 필터링**: 시간 축 미세 변화로 경계값 구간이 필터링됨
+  5. **`silence_merge_ms` (50ms) 병합 차이**: slice 경계에서 병합 결과가 달라질 수 있음
+- 코드 수정 없이 분석만 진행 (개선 방향 도출 완료, 추후 반영 예정)
+
+## [1.5.0] - 2026-03-27
+
+### HTML 리포트 내보내기 기능 추가
+- 분석 결과 전체(요약 통계, 지표 테이블, 차트)를 self-contained HTML 파일로 저장하는 기능 추가
+- 차트는 base64 PNG로 인라인 삽입되어 HTML 파일 하나만 공유하면 브라우저에서 모든 정보 확인 가능
+- 다크 테마 CSS 적용, 반응형 레이아웃 지원
+- 싱글/듀얼 모드 모두 지원 (듀얼 시 Pair 1 / Pair 2 좌우 배치)
+- GUI에 "HTML 저장" 버튼 추가 (PNG 저장 옆)
+- `export.py`에 `save_html()`, `_fig_to_base64()`, `_build_result_html()` 함수 추가
+
+### 테스트
+- `tests/test_export.py`에 HTML 내보내기 테스트 2건 추가
+  - 싱글 결과 HTML 생성 및 필수 콘텐츠(지표, 차트 base64, 테이블) 포함 검증
+  - 듀얼 결과 HTML 생성 시 Pair 1 / Pair 2 및 듀얼 레이아웃 포함 검증
+
+## [1.4.2] - 2026-03-27
+
+### 음량 정규화 잔차 차트 타이틀 개선
+- `gain=0.5000` → `dif = 0.50× ref` 형태로 변경하여 직관적으로 "몇 배"인지 표시
+- 소수점 둘째 자리에서 올림(ceil) 처리
+- `×` 단위 표기 추가
+- 예시: `Residual – Volume Normalized (dif = 0.50× ref, -6.02 dB)`
+
+## [1.4.1] - 2026-03-27
+
+### 음량 정규화 잔차 차트에 볼륨 차이(dB) 표기 추가
+- 차트 타이틀에 ref 대비 dif의 볼륨 차이를 dB 단위로 표시 (예: `dif vol: -6.02 dB vs ref`)
+- dif가 ref보다 크면 양수(+), 작으면 음수(-) 부호로 직관적 확인 가능
+- 계산식: `20 * log10(dif_rms / ref_rms)`
+- 양쪽 모두 무음이거나 dif가 무음인 경우 0.0 dB 폴백
+
+### 테스트
+- `tests/test_volume_normalized_residual.py` 확장 (8건 → 10건)
+  - dB 부호 규칙 검증 테스트 추가 (`test_vol_diff_db_sign_convention`)
+  - Hypothesis PBT: `vol_diff_db = 20*log10(scale)` 관계 검증 추가 (`test_vol_diff_db_matches_scale`)
+  - 기존 테스트에 dB 값 정확도 assertion 추가
+
+## [1.4.0] - 2026-03-27
+
+### 음량 정규화 잔차(Volume-Normalized Residual) 차트 추가
+- 기존 `Residual (ref - dif)` 차트 바로 아래에 음량 정규화 잔차 차트 신규 추가
+- dif의 전체 RMS를 ref의 RMS에 맞추는 gain을 계산하여 dif를 스케일링한 뒤 `ref - dif_scaled`을 표시
+- 볼륨 차이만 존재하는 두 신호의 경우 잔차가 0으로 표시되어, 순수 파형 차이만 시각적으로 확인 가능
+- 차트 타이틀에 적용된 gain 값 표시 (예: `gain=2.0000`)
+- 기존 잔차 차트와 동일한 threshold 하이라이트 적용
+- Pair 1 / Pair 2 모두 동일하게 적용
+- PNG 내보내기 시 새 차트 포함
+
+### 테스트
+- `tests/test_volume_normalized_residual.py` 추가 (8건)
+  - 동일 신호, 볼륨만 다른 신호, 파형이 다른 신호, 무음 신호 등 케이스별 검증
+  - Hypothesis PBT: 임의 양수 스케일 × 동일 파형 → 정규화 후 잔차 ≈ 0 속성 검증
+
 ## [1.3.0] - 2026-03-26
 
 ### GUI 레이아웃 개선 (2차)

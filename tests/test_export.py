@@ -131,3 +131,74 @@ def test_export_png_multiple_figures():
             plt.close(fig)
         import shutil
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ── HTML 내보내기 검증 ────────────────────────────────────────────────────────
+
+from export import save_html
+
+
+def test_export_html_file_created():
+    """save_html() 저장 후 HTML 파일이 생성되고 필수 콘텐츠가 포함되는지 검증한다."""
+    result, ref_path, dif_path = _get_result()
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+
+    tmp_html = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
+    tmp_html.close()
+
+    try:
+        save_html([result], [[fig]], tmp_html.name)
+        assert os.path.exists(tmp_html.name), "HTML 파일이 생성되지 않았습니다"
+        assert os.path.getsize(tmp_html.name) > 0, "HTML 파일이 비어 있습니다"
+
+        with open(tmp_html.name, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 기본 HTML 구조 확인
+        assert "<!DOCTYPE html>" in content
+        assert "Audio Quality Analyzer Report" in content
+        # 지표 테이블 확인
+        assert "SNR" in content
+        assert "PESQ" in content
+        assert "STOI" in content
+        assert "Silence Leakage" in content
+        # 차트 이미지 (base64) 포함 확인
+        assert "data:image/png;base64," in content
+        # 묵음 이벤트 테이블 확인
+        assert "dif-only" in content
+    finally:
+        plt.close(fig)
+        os.unlink(tmp_html.name)
+        os.unlink(ref_path)
+        os.unlink(dif_path)
+
+
+def test_export_html_dual_results():
+    """듀얼 모드(2개 결과) HTML 저장 시 Pair 1, Pair 2가 모두 포함되는지 검증한다."""
+    result1, ref1, dif1 = _get_result()
+    result2, ref2, dif2 = _get_result()
+    fig1, _ = plt.subplots()
+    fig2, _ = plt.subplots()
+
+    tmp_html = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
+    tmp_html.close()
+
+    try:
+        save_html([result1, result2], [[fig1], [fig2]], tmp_html.name)
+
+        with open(tmp_html.name, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert "Pair 1" in content
+        assert "Pair 2" in content
+        # 듀얼 레이아웃 CSS 클래스 확인
+        assert "dual" in content
+    finally:
+        plt.close(fig1)
+        plt.close(fig2)
+        os.unlink(tmp_html.name)
+        os.unlink(ref1)
+        os.unlink(dif1)
+        os.unlink(ref2)
+        os.unlink(dif2)
