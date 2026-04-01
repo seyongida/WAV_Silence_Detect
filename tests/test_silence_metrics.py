@@ -1,121 +1,154 @@
-"""silence_metrics 모듈 속성 기반 테스트."""
+"""silence_metrics 모듈 테스트."""
 
 import numpy as np
 import pytest
-from hypothesis import given, settings
-from hypothesis import strategies as st
 
-from models import AnalysisConfig, Frame, SilenceMetrics, SilenceSegment
-from silence_metrics import compute_silence_metrics
+from models import AnalysisConfig, AnomalySegment, SilenceSegment
+from silence_metrics import detect_anomalies, compute_silence_metrics, _difference_segments
 
 
-SR = 16000
+@pytest.fixture
+def config():
+    return AnalysisConfig()
 
 
-def _make_frames(silence_pattern: list[bool], frame_ms: int = 20, hop_ms: int = 10) -> list[Frame]:
-    """묵음 패턴으로 Frame 목록을 생성한다."""
-    frames = []
-    for i, is_silence in enumerate(silence_pattern):
-        start_ms = i * hop_ms
-        end_ms = start_ms + frame_ms
-        samples = np.zeros(int(SR * frame_ms / 1000), dtype=np.float32)
-        frames.append(
-            Frame(
-                index=i,
-                start_ms=float(start_ms),
-                end_ms=float(end_ms),
-                samples=samples,
-                final_silence=is_silence,
-            )
+class TestDetectAnomalies:
+    """detect_anomalies 함수 테스트."""
+
+    def test_identical_signals_no_anomaly(self, config):
+        """ref와 dif가 동일하면 이상 구간 없음."""
+        sr = 16000
+        t = np.linspace(0, 1.0, sr, dtype=np.float32)
+        sig = 0.3 * np.sin(2 * np.pi * 440 * t)
+        result = detect_anomalies(sig, sig.copy(), sr, config)
+        assert result == []
+
+    def test_digital_zero_detected(self, config):
+        """dif 중간에 디지털 제로 삽입 시 검출."""
+        sr = 16000
+        duration = 1.0
+        n = int(sr * duration)
+        t = np.linspace(0, duration, n, dtype=np.float32)
+        ref = 0.3 * np.sin(2 * np.pi * 440 * t)
+        dif = ref.copy()
+
+        # 300~500ms 구간을 디지털 제로로
+        zero_start = int(0.3 * sr)
+        zero_end = int(0.5 * sr)
+        dif[zero_start:zero_end] = 0.0
+
+        result = detect_anomalies(ref, dif, sr, config)
+        assert len(result) >= 1
+
+        seg = result[0]
+        assert seg.anomaly_type == "digital_zero"
+        assert seg.start_ms >= 250
+        assert seg.end_ms <= 550
+        assert seg.duration_ms >= 50
+
+    def test_gain_drop_detected(self, config):
+        """dif 중간에 gain이 크게 떨어지면 검출."""
+        sr = 16000
+        n = int(sr * 1.0)
+        t = np.linspace(0, 1.0, n, dtype=np.float32)
+        ref = 0.3 * np.sin(2 * np.pi * 440 * t)
+        dif = ref.copy()
+
+        # 400~700ms 구간 gain을 -20dB로 (파형 유지 → corr 높음 → Type A)
+        drop_start = int(0.4 * sr)
+        drop_end = int(0.7 * sr)
+        dif[drop_start:drop_end] *= 0.1
+
+        result = detect_anomalies(ref, dif, sr, config)
+        assert len(result) >= 1
+        seg = result[0]
+        assert seg.anomaly_type == "gain_drop"
+        assert seg.start_ms >= 350
+        assert seg.end_ms <= 750
+
+    def test_ref_silence_excluded(self, config):
+        """ref가 묵음인 구간은 판정에서 제외."""
+        sr = 16000
+        n = int(sr * 1.0)
+        ref = np.zeros(n, dtype=np.float32)
+        dif = np.zeros(n, dtype=np.float32)
+
+        result = detect_anomalies(ref, dif, sr, config)
+        assert result == []
+
+    def test_empty_input(self, config):
+        """빈 입력 처리."""
+        result = detect_anomalies(
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.float32),
+            16000, config,
         )
-    return frames
+        assert result == []
+
+    def test_short_anomaly_filtered(self, config):
+        """10ms 디지털 제로는 최소 지속시간 미만으로 필터링."""
+        sr = 16000
+        n = int(sr * 1.0)
+        t = np.linspace(0, 1.0, n, dtype=np.float32)
+        ref = 0.3 * np.sin(2 * np.pi * 440 * t)
+        dif = ref.copy()
+
+        # 10ms만 제로 → 최소 50ms 미만이므로 필터링
+        s = int(0.5 * sr)
+        e = s + int(0.01 * sr)
+        dif[s:e] = 0.0
+
+        result = detect_anomalies(ref, dif, sr, config)
+        assert result == []
 
 
-def _segments_from_pattern(
-    silence_pattern: list[bool], frame_ms: int = 20, hop_ms: int = 10
-) -> list[SilenceSegment]:
-    """묵음 패턴에서 SilenceSegment 목록을 추출한다."""
-    frames = _make_frames(silence_pattern, frame_ms=frame_ms, hop_ms=hop_ms)
-    segs: list[SilenceSegment] = []
-    in_silence = False
-    start_ms = 0.0
-    for f in frames:
-        if f.final_silence and not in_silence:
-            in_silence = True
-            start_ms = f.start_ms
-        elif (not f.final_silence) and in_silence:
-            in_silence = False
-            segs.append(SilenceSegment(start_ms=start_ms, end_ms=f.start_ms, duration_ms=f.start_ms - start_ms))
-    if in_silence and frames:
-        segs.append(SilenceSegment(start_ms=start_ms, end_ms=frames[-1].end_ms, duration_ms=frames[-1].end_ms - start_ms))
-    return segs
+class TestDifferenceSegments:
+    """_difference_segments 함수 테스트."""
+
+    def test_no_overlap(self):
+        base = [SilenceSegment(100, 200, 100)]
+        subtract = [SilenceSegment(300, 400, 100)]
+        result = _difference_segments(base, subtract, merge_ms=50, min_ms=50)
+        assert len(result) == 1
+        assert result[0].start_ms == 100
+
+    def test_full_overlap(self):
+        base = [SilenceSegment(100, 200, 100)]
+        subtract = [SilenceSegment(50, 250, 200)]
+        result = _difference_segments(base, subtract, merge_ms=50, min_ms=50)
+        assert result == []
+
+    def test_partial_overlap(self):
+        base = [SilenceSegment(100, 300, 200)]
+        subtract = [SilenceSegment(150, 250, 100)]
+        result = _difference_segments(base, subtract, merge_ms=10, min_ms=40)
+        assert len(result) == 2
 
 
-# ── Property 10: 묵음 비율 범위 ──────────────────────────────────────────────
+class TestComputeSilenceMetrics:
+    """compute_silence_metrics 통합 테스트."""
 
-@settings(max_examples=100)
-@given(
-    ref_pattern=st.lists(st.booleans(), min_size=20, max_size=200),
-    dif_pattern=st.lists(st.booleans(), min_size=20, max_size=200),
-)
-def test_property10_silence_metrics_range(ref_pattern, dif_pattern):
-    """Feature: audio-quality-analyzer, Property 10: 묵음 비율 범위
-    compute_silence_metrics() 반환 silence_leakage와 false_silence가 [0.0, 1.0] 범위이어야 한다.
-    Validates: Requirements 7.4, 7.5
-    """
-    # 두 패턴 길이를 맞춤
-    min_len = min(len(ref_pattern), len(dif_pattern))
-    ref_pattern = ref_pattern[:min_len]
-    dif_pattern = dif_pattern[:min_len]
+    def test_with_digital_zero(self, config):
+        """디지털 제로가 있는 경우 false_silence > 0."""
+        sr = 16000
+        n = int(sr * 1.0)
+        t = np.linspace(0, 1.0, n, dtype=np.float32)
+        ref = 0.3 * np.sin(2 * np.pi * 440 * t)
+        dif = ref.copy()
+        dif[int(0.3*sr):int(0.6*sr)] = 0.0
 
-    ref_frames = _make_frames(ref_pattern)
-    dif_frames = _make_frames(dif_pattern)
-    ref_silence = _segments_from_pattern(ref_pattern)
-    dif_silence = _segments_from_pattern(dif_pattern)
-    config = AnalysisConfig(frame_ms=20, hop_ms=10)
+        from vad import compute_frames, detect_silence
+        ref_frames = compute_frames(ref, sr, config)
+        dif_frames = compute_frames(dif, sr, config)
+        ref_silence = detect_silence(ref_frames, sr, config)
+        dif_silence = detect_silence(dif_frames, sr, config)
 
-    metrics, false_segs, leakage_segs = compute_silence_metrics(
-        ref_frames, dif_frames, ref_silence, dif_silence, SR, config
-    )
+        metrics, false_segs, leak_segs = compute_silence_metrics(
+            ref_frames, dif_frames, ref_silence, dif_silence,
+            sr, config, dif_audio=dif, ref_audio=ref,
+        )
 
-    assert 0.0 <= metrics.silence_leakage <= 1.0, (
-        f"silence_leakage 범위 초과: {metrics.silence_leakage}"
-    )
-    assert 0.0 <= metrics.false_silence <= 1.0, (
-        f"false_silence 범위 초과: {metrics.false_silence}"
-    )
-
-
-def test_property10_all_silence_ref_no_silence_dif():
-    """ref 전체 묵음, dif 전체 비묵음 → silence_leakage == 1.0"""
-    ref_pattern = [True] * 100
-    dif_pattern = [False] * 100
-
-    ref_frames = _make_frames(ref_pattern)
-    dif_frames = _make_frames(dif_pattern)
-    ref_silence = _segments_from_pattern(ref_pattern)
-    dif_silence = _segments_from_pattern(dif_pattern)
-    config = AnalysisConfig(frame_ms=20, hop_ms=10, min_silence_ms=0, silence_merge_ms=0)
-
-    metrics, _, leakage_segs = compute_silence_metrics(
-        ref_frames, dif_frames, ref_silence, dif_silence, SR, config
-    )
-
-    assert metrics.silence_leakage == pytest.approx(1.0, abs=0.01)
-
-
-def test_property10_identical_patterns_zero_metrics():
-    """동일 패턴 → silence_leakage == 0, false_silence == 0"""
-    pattern = [False] * 50 + [True] * 30 + [False] * 20
-
-    ref_frames = _make_frames(pattern)
-    dif_frames = _make_frames(pattern)
-    segs = _segments_from_pattern(pattern)
-    config = AnalysisConfig(frame_ms=20, hop_ms=10)
-
-    metrics, false_segs, leakage_segs = compute_silence_metrics(
-        ref_frames, dif_frames, segs, segs, SR, config
-    )
-
-    assert metrics.silence_leakage == 0.0
-    assert metrics.false_silence == 0.0
+        assert metrics.dif_silence_count >= 1
+        assert metrics.dif_total_silence_ms > 0
+        assert metrics.false_silence > 0
+        assert len(false_segs) >= 1

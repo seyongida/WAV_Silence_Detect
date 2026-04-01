@@ -1,8 +1,23 @@
-"""Silence metrics computed by segment-set operations."""
+"""이상 구간 검출 모듈 (주변 대비 ratio 급변 + correlation 기반).
+
+알고리즘 개요:
+1. 프레임별 ref/dif RMS, peak, correlation 계산 (20ms 프레임, 10ms 홉)
+2. 주변 1초 구간의 ratio 중앙값(context_med) 대비 급격한 하락 검출
+3. 묵음(digital_zero): dif_peak ≈ 0 + ref 음성 구간
+4. 깨짐 Type A(gain_drop): ratio 급락 + correlation 높음 (파형 유사, gain만 변화)
+5. 깨짐 Type B(distortion): ratio 급락 + 100ms 이상 지속 (gap 허용 병합)
+6. 묵음 직후 200ms 이내의 distortion은 복구 과정으로 제외
+"""
 
 import numpy as np
 
-from models import AnalysisConfig, Frame, SilenceMetrics, SilenceSegment
+from models import (
+    AnalysisConfig,
+    AnomalySegment,
+    Frame,
+    SilenceMetrics,
+    SilenceSegment,
+)
 
 
 def compute_silence_metrics(
@@ -15,79 +30,29 @@ def compute_silence_metrics(
     dif_audio: np.ndarray | None = None,
     ref_audio: np.ndarray | None = None,
 ) -> tuple[SilenceMetrics, list[SilenceSegment], list[SilenceSegment]]:
-    del dif_frames
-
-    if not ref_frames:
-        metrics = SilenceMetrics(
-            silence_leakage=0.0,
-            false_silence=0.0,
-            dif_silence_count=0,
-            dif_total_silence_ms=0.0,
+    """이상 구간을 검출하고 SilenceMetrics를 반환한다."""
+    if ref_audio is None or dif_audio is None or len(ref_audio) == 0:
+        empty = SilenceMetrics(
+            silence_leakage=0.0, false_silence=0.0,
+            dif_silence_count=0, dif_total_silence_ms=0.0,
         )
-        return metrics, [], []
+        return empty, [], []
 
-    total_ref_duration_ms = float(ref_frames[-1].end_ms)
-    total_ref_silence_ms = float(sum(s.duration_ms for s in ref_silence))
-    ref_non_silence_ms = max(total_ref_duration_ms - total_ref_silence_ms, 1e-6)
+    anomalies = detect_anomalies(ref_audio, dif_audio, sr, config)
 
-    # 방안 B: ref 묵음 경계를 margin만큼 확장하여 전환부 오탐 흡수
-    margin_ms = float(getattr(config, "silence_boundary_margin_ms", 100))
-    expanded_ref_silence = _expand_segments(ref_silence, margin_ms, total_ref_duration_ms)
+    false_silence_segs = [
+        SilenceSegment(start_ms=a.start_ms, end_ms=a.end_ms, duration_ms=a.duration_ms)
+        for a in anomalies
+    ]
 
-    # dif-only silence: 확장된 ref 묵음을 빼서 경계 오탐 제거
-    dif_only_silence = _difference_segments(
-        base=dif_silence,
-        subtract=expanded_ref_silence,
-        merge_ms=float(config.silence_merge_ms),
-        min_ms=float(config.min_silence_ms),
-    )
+    leakage_segs = _compute_leakage(ref_silence, dif_silence, config)
 
-    # 방안 C: dif-only 구간의 에너지를 절대 임계값으로 재검증
-    if dif_audio is not None and len(dif_only_silence) > 0:
-        energy_thr = float(getattr(config, "dif_only_energy_threshold_db", -40.0))
-        dif_only_silence = _verify_energy(dif_only_silence, dif_audio, sr, energy_thr)
+    total_duration_ms = len(ref_audio) / sr * 1000.0
+    total_ref_silence_ms = sum(s.duration_ms for s in ref_silence)
+    ref_non_silence_ms = max(total_duration_ms - total_ref_silence_ms, 1e-6)
 
-    # 잡음 소실 필터: dif가 디지털 제로이고 ref가 미세 잡음인 구간 제외
-    if dif_audio is not None and ref_audio is not None and len(dif_only_silence) > 0:
-        peak_thr = float(getattr(config, "noise_loss_peak_threshold", 0.002))
-        ref_energy_thr = float(getattr(config, "noise_loss_ref_energy_db", -30.0))
-        dif_only_silence = _filter_noise_loss(
-            dif_only_silence, dif_audio, ref_audio, sr, peak_thr, ref_energy_thr,
-        )
-
-    # 디지털 제로 검출: dif가 제로이고 ref에 유의미한 소리가 있는 구간을 별도 검출하여 합산
-    if dif_audio is not None and ref_audio is not None:
-        dz_peak = float(getattr(config, "digital_zero_peak_threshold", 0.002))
-        dz_ref_db = float(getattr(config, "digital_zero_ref_energy_db", -30.0))
-        digital_zero_segs = _detect_digital_zero_segments(
-            dif_audio, ref_audio, sr, config, dz_peak, dz_ref_db,
-        )
-        # 디지털 제로 검출 결과에도 잡음 소실 필터 적용
-        if digital_zero_segs:
-            peak_thr = float(getattr(config, "noise_loss_peak_threshold", 0.002))
-            ref_energy_thr = float(getattr(config, "noise_loss_ref_energy_db", -30.0))
-            digital_zero_segs = _filter_noise_loss(
-                digital_zero_segs, dif_audio, ref_audio, sr, peak_thr, ref_energy_thr,
-            )
-        if digital_zero_segs:
-            # 기존 dif-only와 합산 후 병합
-            combined = dif_only_silence + digital_zero_segs
-            dif_only_silence = _merge_then_filter(
-                combined,
-                merge_ms=float(config.silence_merge_ms),
-                min_ms=float(config.min_silence_ms),
-            )
-
-    # leakage: ref 묵음 중 dif에 소리가 있는 구간 (원본 ref_silence 사용)
-    leakage_segs = _difference_segments(
-        base=ref_silence,
-        subtract=dif_silence,
-        merge_ms=float(config.silence_merge_ms),
-        min_ms=float(config.min_silence_ms),
-    )
-
-    dif_only_total_ms = float(sum(s.duration_ms for s in dif_only_silence))
-    leakage_total_ms = float(sum(s.duration_ms for s in leakage_segs))
+    dif_only_total_ms = sum(s.duration_ms for s in false_silence_segs)
+    leakage_total_ms = sum(s.duration_ms for s in leakage_segs)
 
     silence_leakage = leakage_total_ms / total_ref_silence_ms if total_ref_silence_ms > 0 else 0.0
     false_silence = dif_only_total_ms / ref_non_silence_ms
@@ -95,255 +60,276 @@ def compute_silence_metrics(
     metrics = SilenceMetrics(
         silence_leakage=float(np.clip(silence_leakage, 0.0, 1.0)),
         false_silence=float(np.clip(false_silence, 0.0, 1.0)),
-        dif_silence_count=len(dif_only_silence),
+        dif_silence_count=len(anomalies),
         dif_total_silence_ms=dif_only_total_ms,
     )
-    return metrics, dif_only_silence, leakage_segs
+    return metrics, false_silence_segs, leakage_segs
 
 
-def _expand_segments(
-    segments: list[SilenceSegment],
-    margin_ms: float,
-    max_ms: float,
-) -> list[SilenceSegment]:
-    """묵음 구간 양쪽 경계를 margin_ms만큼 확장한 뒤 겹치는 구간을 병합한다."""
-    if not segments or margin_ms <= 0:
-        return list(segments)
-
-    expanded: list[SilenceSegment] = []
-    for s in segments:
-        new_start = max(0.0, s.start_ms - margin_ms)
-        new_end = min(max_ms, s.end_ms + margin_ms)
-        expanded.append(SilenceSegment(
-            start_ms=new_start,
-            end_ms=new_end,
-            duration_ms=new_end - new_start,
-        ))
-
-    # 확장 후 겹치는 구간 병합
-    expanded.sort(key=lambda s: s.start_ms)
-    merged: list[SilenceSegment] = [expanded[0]]
-    for seg in expanded[1:]:
-        prev = merged[-1]
-        if seg.start_ms <= prev.end_ms:
-            new_end = max(prev.end_ms, seg.end_ms)
-            merged[-1] = SilenceSegment(
-                start_ms=prev.start_ms,
-                end_ms=new_end,
-                duration_ms=new_end - prev.start_ms,
-            )
-        else:
-            merged.append(seg)
-
-    return merged
-
-
-def _verify_energy(
-    segments: list[SilenceSegment],
-    audio: np.ndarray,
-    sr: int,
-    threshold_db: float,
-) -> list[SilenceSegment]:
-    """dif-only 구간의 실제 에너지가 절대 임계값 이하인지 재검증한다.
-
-    임계값을 초과하는 구간(실제로 소리가 있는 구간)은 제거한다.
-    """
-    mono = audio if audio.ndim == 1 else audio.mean(axis=1).astype(np.float32)
-    verified: list[SilenceSegment] = []
-
-    for seg in segments:
-        start_idx = int(seg.start_ms / 1000.0 * sr)
-        end_idx = int(seg.end_ms / 1000.0 * sr)
-        start_idx = max(0, min(start_idx, len(mono)))
-        end_idx = max(start_idx, min(end_idx, len(mono)))
-
-        if end_idx <= start_idx:
-            continue
-
-        chunk = mono[start_idx:end_idx].astype(np.float64)
-        energy = float(np.sum(chunk ** 2) / len(chunk))
-        if energy <= 0:
-            log_energy = -100.0
-        else:
-            log_energy = float(10.0 * np.log10(energy + 1e-10))
-
-        # 에너지가 임계값 이하인 경우만 진짜 묵음으로 인정
-        if log_energy <= threshold_db:
-            verified.append(seg)
-
-    return verified
-
-
-def _filter_noise_loss(
-    segments: list[SilenceSegment],
-    dif_audio: np.ndarray,
+def detect_anomalies(
     ref_audio: np.ndarray,
-    sr: int,
-    dif_peak_threshold: float,
-    ref_energy_threshold_db: float,
-) -> list[SilenceSegment]:
-    """dif가 디지털 제로이고 ref가 미세 잡음인 구간을 제외한다.
-
-    전송 과정에서 미세 배경 잡음이 소실되어 dif에 디지털 제로가 생긴 경우,
-    이를 "새로 삽입된 묵음"이 아닌 "잡음 소실"로 간주하여 dif-only에서 제거한다.
-    """
-    dif_mono = dif_audio if dif_audio.ndim == 1 else dif_audio.mean(axis=1).astype(np.float32)
-    ref_mono = ref_audio if ref_audio.ndim == 1 else ref_audio.mean(axis=1).astype(np.float32)
-    result: list[SilenceSegment] = []
-
-    for seg in segments:
-        si = int(seg.start_ms / 1000.0 * sr)
-        ei = int(seg.end_ms / 1000.0 * sr)
-        si = max(0, min(si, len(dif_mono)))
-        ei = max(si, min(ei, len(dif_mono)))
-
-        if ei <= si:
-            continue
-
-        dif_chunk = dif_mono[si:ei]
-        dif_peak = float(np.max(np.abs(dif_chunk)))
-
-        # dif가 디지털 제로에 가까운지 확인
-        if dif_peak < dif_peak_threshold:
-            # ref 해당 구간의 에너지 확인
-            ref_si = max(0, min(si, len(ref_mono)))
-            ref_ei = max(ref_si, min(ei, len(ref_mono)))
-            if ref_ei > ref_si:
-                ref_chunk = ref_mono[ref_si:ref_ei].astype(np.float64)
-                ref_energy = float(np.sum(ref_chunk ** 2) / len(ref_chunk))
-                ref_log_e = 10.0 * np.log10(ref_energy + 1e-10) if ref_energy > 0 else -100.0
-
-                # ref도 미세 잡음 수준이면 잡음 소실로 간주 → 제외
-                if ref_log_e <= ref_energy_threshold_db:
-                    continue
-
-        result.append(seg)
-
-    return result
-
-
-def _detect_digital_zero_segments(
     dif_audio: np.ndarray,
-    ref_audio: np.ndarray,
     sr: int,
     config: AnalysisConfig,
-    dif_peak_threshold: float,
-    ref_energy_threshold_db: float,
-) -> list[SilenceSegment]:
-    """dif에서 인위적으로 삽입된 묵음을 직접 검출한다.
+) -> list[AnomalySegment]:
+    """주변 대비 ratio 급변 + correlation 기반 이상 구간 검출.
 
-    두 가지 조건 중 하나를 만족하면 인위적 묵음으로 판정:
-    1. dif가 디지털 제로(peak < threshold)이고 ref에 유의미한 소리가 있는 경우
-    2. dif의 에너지가 ref보다 energy_drop_db 이상 낮은 경우 (에너지 드롭)
+    알고리즘:
+    1. 20ms 프레임 / 10ms 홉으로 ref_rms, dif_rms, dif_peak, correlation 계산
+    2. 주변 1초 구간(현재 ±200ms 제외)의 ratio 중앙값 계산
+    3. 묵음: dif_peak < 0.0005 + ref_rms > 0.03
+    4. 깨짐 A: ratio < context_med*0.4 + corr > 0.3 (gain만 변화)
+    5. 깨짐 B: ratio < context_med*0.4 + 100ms+ 지속 (gap 허용 병합)
+    6. 묵음 직후 200ms 이내 distortion 제외
     """
-    dif_mono = dif_audio if dif_audio.ndim == 1 else dif_audio.mean(axis=1).astype(np.float32)
-    ref_mono = ref_audio if ref_audio.ndim == 1 else ref_audio.mean(axis=1).astype(np.float32)
-
-    frame_len = int(sr * config.frame_ms / 1000)
-    hop_len = int(sr * config.hop_ms / 1000)
+    hop_ms = config.anomaly_hop_ms
+    frame_len = int(sr * config.anomaly_frame_ms / 1000)
+    hop_len = int(sr * hop_ms / 1000)
     if frame_len <= 0 or hop_len <= 0:
         return []
 
-    min_len = min(len(dif_mono), len(ref_mono))
-    energy_drop_db = float(getattr(config, "energy_drop_db", 20.0))
-
-    flags: list[tuple[float, float, bool]] = []
-    idx = 0
-    while idx + frame_len <= min_len:
-        start_ms = idx / sr * 1000.0
-        end_ms = (idx + frame_len) / sr * 1000.0
-
-        dif_chunk = dif_mono[idx:idx + frame_len]
-        ref_chunk = ref_mono[idx:idx + frame_len].astype(np.float64)
-
-        dif_peak = float(np.max(np.abs(dif_chunk)))
-        dif_e = float(np.sum(dif_chunk.astype(np.float64) ** 2) / frame_len)
-        ref_e = float(np.sum(ref_chunk ** 2) / frame_len)
-
-        dif_le = 10.0 * np.log10(dif_e + 1e-10) if dif_e > 0 else -100.0
-        ref_le = 10.0 * np.log10(ref_e + 1e-10) if ref_e > 0 else -100.0
-
-        # 조건 1: dif 디지털 제로 + ref 유의미한 소리
-        cond1 = dif_peak < dif_peak_threshold and ref_le > ref_energy_threshold_db
-        # 조건 2: 에너지 드롭 (ref - dif > threshold, 단 dif가 충분히 낮을 때만)
-        cond2 = (ref_le - dif_le) > energy_drop_db and dif_le < -70.0
-
-        flags.append((start_ms, end_ms, cond1 or cond2))
-        idx += hop_len
-
-    # 연속된 True 구간을 SilenceSegment로 변환
-    segments: list[SilenceSegment] = []
-    in_seg = False
-    seg_start = 0.0
-
-    for start_ms, end_ms, is_drop in flags:
-        if is_drop and not in_seg:
-            in_seg = True
-            seg_start = start_ms
-        elif not is_drop and in_seg:
-            in_seg = False
-            segments.append(SilenceSegment(start_ms=seg_start, end_ms=start_ms, duration_ms=start_ms - seg_start))
-
-    if in_seg and flags:
-        last_end = flags[-1][1]
-        segments.append(SilenceSegment(start_ms=seg_start, end_ms=last_end, duration_ms=last_end - seg_start))
-
-    return _merge_then_filter(segments, merge_ms=float(config.silence_merge_ms), min_ms=float(config.min_silence_ms))
-
-
-def _merge_then_filter(
-    segments: list[SilenceSegment],
-    merge_ms: float,
-    min_ms: float,
-) -> list[SilenceSegment]:
-    if not segments:
+    n = min(len(ref_audio), len(dif_audio))
+    if n < frame_len:
         return []
 
-    segs = sorted(segments, key=lambda s: s.start_ms)
-    merged: list[SilenceSegment] = [segs[0]]
-    for seg in segs[1:]:
+    ref = ref_audio[:n].astype(np.float32)
+    dif = dif_audio[:n].astype(np.float32)
+    n_frames = (n - frame_len) // hop_len + 1
+    if n_frames <= 0:
+        return []
+
+    ref_rms, dif_rms, dif_peak, frame_corr = _compute_frame_features(
+        ref, dif, frame_len, hop_len, n_frames,
+    )
+
+    speech = ref_rms > config.ref_silence_rms
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(ref_rms > 0.005, dif_rms / ref_rms, 1.0)
+
+    # 주변 ratio 중앙값 계산
+    context_med = _compute_context_median(ratio, speech, hop_ms, n_frames)
+
+    # 묵음 검출
+    speech_strong = ref_rms > 0.03
+    zero_mask = speech_strong & (dif_peak < 0.0005)
+    silence_segs = _find_segments(zero_mask, hop_ms, min_frames=5)
+
+    # 깨짐 Type A: ratio 급락 + correlation 높음
+    ratio_drop = ratio < context_med * 0.4
+    not_zero = dif_peak >= 0.001
+    gain_a_mask = speech_strong & ratio_drop & not_zero & (frame_corr > 0.3)
+    gain_a_segs = _find_segments(gain_a_mask, hop_ms, min_frames=5)
+
+    # 깨짐 Type B: ratio 급락 + 120ms+ (gap 허용 병합, Type A 제외)
+    # Type A보다 엄격한 ratio 임계값(0.35)과 긴 최소 지속시간으로 오탐 방지
+    ratio_drop_strict = ratio < context_med * 0.35
+    gain_b_base = speech_strong & ratio_drop_strict & not_zero & ~gain_a_mask
+    gain_b_segs = _find_segments_with_gap(gain_b_base, hop_ms, min_frames=12, max_gap=3)
+
+    # 묵음 직후 200ms 이내의 distortion 제외
+    silence_ends = [e_ms for _, e_ms, _ in silence_segs]
+    gain_b_segs = [
+        seg for seg in gain_b_segs
+        if not any(abs(seg[0] - se) < 200 for se in silence_ends)
+    ]
+
+    # AnomalySegment 조립
+    results: list[AnomalySegment] = []
+
+    for s_ms, e_ms, _ in silence_segs:
+        idx_s, idx_e = int(s_ms / hop_ms), min(int(e_ms / hop_ms), n_frames)
+        results.append(AnomalySegment(
+            start_ms=float(s_ms), end_ms=float(e_ms),
+            duration_ms=float(e_ms - s_ms),
+            anomaly_type="digital_zero",
+            mean_gain_db=-100.0,
+            mean_correlation=float(np.mean(frame_corr[idx_s:idx_e])) if idx_e > idx_s else 0.0,
+        ))
+
+    for s_ms, e_ms, _ in gain_a_segs:
+        idx_s, idx_e = int(s_ms / hop_ms), min(int(e_ms / hop_ms), n_frames)
+        avg_ratio = float(np.mean(ratio[idx_s:idx_e])) if idx_e > idx_s else 0.0
+        gain_db = float(20.0 * np.log10(avg_ratio + 1e-10))
+        results.append(AnomalySegment(
+            start_ms=float(s_ms), end_ms=float(e_ms),
+            duration_ms=float(e_ms - s_ms),
+            anomaly_type="gain_drop",
+            mean_gain_db=gain_db,
+            mean_correlation=float(np.mean(frame_corr[idx_s:idx_e])) if idx_e > idx_s else 0.0,
+        ))
+
+    for s_ms, e_ms, _ in gain_b_segs:
+        idx_s, idx_e = int(s_ms / hop_ms), min(int(e_ms / hop_ms), n_frames)
+        avg_ratio = float(np.mean(ratio[idx_s:idx_e])) if idx_e > idx_s else 0.0
+        gain_db = float(20.0 * np.log10(avg_ratio + 1e-10))
+        results.append(AnomalySegment(
+            start_ms=float(s_ms), end_ms=float(e_ms),
+            duration_ms=float(e_ms - s_ms),
+            anomaly_type="gain_drop",
+            mean_gain_db=gain_db,
+            mean_correlation=float(np.mean(frame_corr[idx_s:idx_e])) if idx_e > idx_s else 0.0,
+        ))
+
+    results.sort(key=lambda s: s.start_ms)
+    return results
+
+
+def _compute_frame_features(
+    ref: np.ndarray, dif: np.ndarray,
+    frame_len: int, hop_len: int, n_frames: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """프레임별 RMS, peak, correlation 계산."""
+    ref_rms = np.zeros(n_frames)
+    dif_rms = np.zeros(n_frames)
+    dif_peak = np.zeros(n_frames)
+    frame_corr = np.zeros(n_frames)
+
+    for i in range(n_frames):
+        s = i * hop_len
+        e = s + frame_len
+        r = ref[s:e].astype(np.float64)
+        d = dif[s:e].astype(np.float64)
+        ref_rms[i] = np.sqrt(np.mean(r ** 2))
+        dif_rms[i] = np.sqrt(np.mean(d ** 2))
+        dif_peak[i] = np.max(np.abs(d))
+        if np.std(r) > 1e-8 and np.std(d) > 1e-8:
+            frame_corr[i] = np.corrcoef(r, d)[0, 1]
+        else:
+            frame_corr[i] = 0.0
+
+    return ref_rms, dif_rms, dif_peak, frame_corr
+
+
+def _compute_context_median(
+    ratio: np.ndarray, speech: np.ndarray,
+    hop_ms: int, n_frames: int,
+) -> np.ndarray:
+    """각 프레임의 주변 1초 구간(현재 ±200ms 제외) ratio 중앙값 계산."""
+    context_win = int(1000 / hop_ms)
+    exclude_half = int(200 / hop_ms)
+    context_med = np.ones(n_frames)
+
+    for i in range(n_frames):
+        left_s = max(0, i - context_win)
+        left_e = max(0, i - exclude_half)
+        right_s = min(n_frames, i + exclude_half)
+        right_e = min(n_frames, i + context_win)
+        indices = list(range(left_s, left_e)) + list(range(right_s, right_e))
+        if indices:
+            ctx = [ratio[j] for j in indices if speech[j]]
+            if len(ctx) > 5:
+                context_med[i] = np.median(ctx)
+
+    return context_med
+
+
+def _find_segments(
+    mask: np.ndarray, hop_ms: int, min_frames: int = 3,
+) -> list[tuple[int, int, int]]:
+    """연속 True 구간을 (start_ms, end_ms, n_frames) 리스트로 반환."""
+    segs: list[tuple[int, int, int]] = []
+    in_seg = False
+    start = 0
+    for i in range(len(mask) + 1):
+        active = i < len(mask) and mask[i]
+        if active and not in_seg:
+            in_seg = True
+            start = i
+        elif not active and in_seg:
+            in_seg = False
+            length = i - start
+            if length >= min_frames:
+                segs.append((start * hop_ms, i * hop_ms, length))
+    return segs
+
+
+def _find_segments_with_gap(
+    mask: np.ndarray, hop_ms: int,
+    min_frames: int = 3, max_gap: int = 2,
+) -> list[tuple[int, int, int]]:
+    """gap 허용 병합: max_gap 이하의 False 구간을 무시하고 연속으로 취급."""
+    segs: list[tuple[int, int, int]] = []
+    in_seg = False
+    start = 0
+    gap_count = 0
+    last_active = 0
+
+    for i in range(len(mask)):
+        if mask[i]:
+            if not in_seg:
+                in_seg = True
+                start = i
+            gap_count = 0
+            last_active = i
+        else:
+            if in_seg:
+                gap_count += 1
+                if gap_count > max_gap:
+                    in_seg = False
+                    length = last_active - start + 1
+                    if length >= min_frames:
+                        segs.append((start * hop_ms, (last_active + 1) * hop_ms, length))
+
+    if in_seg:
+        length = last_active - start + 1
+        if length >= min_frames:
+            segs.append((start * hop_ms, (last_active + 1) * hop_ms, length))
+
+    return segs
+
+
+def _compute_leakage(
+    ref_silence: list[SilenceSegment],
+    dif_silence: list[SilenceSegment],
+    config: AnalysisConfig,
+) -> list[SilenceSegment]:
+    """ref 묵음 중 dif에 소리가 있는 구간."""
+    return _difference_segments(
+        base=ref_silence, subtract=dif_silence,
+        merge_ms=float(config.silence_merge_ms),
+        min_ms=float(config.min_silence_ms),
+    )
+
+
+def _difference_segments(
+    base: list[SilenceSegment],
+    subtract: list[SilenceSegment],
+    merge_ms: float, min_ms: float,
+) -> list[SilenceSegment]:
+    """base에서 subtract를 빼고 병합/필터링."""
+    if not base:
+        return []
+
+    result: list[SilenceSegment] = []
+    for seg in base:
+        remaining = [(seg.start_ms, seg.end_ms)]
+        for sub in subtract:
+            new_remaining = []
+            for s, e in remaining:
+                if sub.end_ms <= s or sub.start_ms >= e:
+                    new_remaining.append((s, e))
+                else:
+                    if sub.start_ms > s:
+                        new_remaining.append((s, sub.start_ms))
+                    if sub.end_ms < e:
+                        new_remaining.append((sub.end_ms, e))
+            remaining = new_remaining
+        for s, e in remaining:
+            result.append(SilenceSegment(start_ms=s, end_ms=e, duration_ms=e - s))
+
+    if not result:
+        return []
+    result.sort(key=lambda x: x.start_ms)
+    merged = [result[0]]
+    for seg in result[1:]:
         prev = merged[-1]
-        gap = seg.start_ms - prev.end_ms
-        if gap < merge_ms:
+        if seg.start_ms - prev.end_ms < merge_ms:
             new_end = max(prev.end_ms, seg.end_ms)
             merged[-1] = SilenceSegment(
-                start_ms=prev.start_ms,
-                end_ms=new_end,
+                start_ms=prev.start_ms, end_ms=new_end,
                 duration_ms=new_end - prev.start_ms,
             )
         else:
             merged.append(seg)
 
     return [s for s in merged if s.duration_ms >= min_ms]
-
-
-def _difference_segments(
-    base: list[SilenceSegment],
-    subtract: list[SilenceSegment],
-    merge_ms: float,
-    min_ms: float,
-) -> list[SilenceSegment]:
-    if not base:
-        return []
-
-    pieces: list[SilenceSegment] = []
-    for b in base:
-        intervals = [(b.start_ms, b.end_ms)]
-        for s in subtract:
-            next_intervals: list[tuple[float, float]] = []
-            for st, en in intervals:
-                if s.end_ms <= st or s.start_ms >= en:
-                    next_intervals.append((st, en))
-                    continue
-                if s.start_ms > st:
-                    next_intervals.append((st, s.start_ms))
-                if s.end_ms < en:
-                    next_intervals.append((s.end_ms, en))
-            intervals = next_intervals
-            if not intervals:
-                break
-        for st, en in intervals:
-            if en > st:
-                pieces.append(SilenceSegment(start_ms=st, end_ms=en, duration_ms=en - st))
-
-    return _merge_then_filter(pieces, merge_ms=merge_ms, min_ms=min_ms)

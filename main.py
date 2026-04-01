@@ -13,7 +13,6 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 from PyQt5.QtGui import QFont, QColor, QIcon
 from PyQt5.QtWidgets import (
     QApplication,
-    QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -63,8 +62,6 @@ class Colors:
     PAIR2 = "#ab47bc"
     REF_COLOR = "#42a5f5"
     DIF_COLOR = "#ff9800"
-    SILENCE_DIF = "#ff9800"
-    SILENCE_REF = "#42a5f5"
     FALSE_SILENCE = "#f44336"
     LEAKAGE = "#ffeb3b"
 
@@ -185,21 +182,6 @@ QProgressBar {{
 QProgressBar::chunk {{
     background-color: {Colors.ACCENT};
     border-radius: 4px;
-}}
-QCheckBox {{
-    color: {Colors.TEXT};
-    spacing: 6px;
-}}
-QCheckBox::indicator {{
-    width: 16px;
-    height: 16px;
-    border: 2px solid {Colors.BORDER};
-    border-radius: 3px;
-    background-color: {Colors.SURFACE};
-}}
-QCheckBox::indicator:checked {{
-    background-color: {Colors.ACCENT};
-    border-color: {Colors.ACCENT};
 }}
 QTabWidget::pane {{
     border: 1px solid {Colors.BORDER};
@@ -562,14 +544,8 @@ class ParamPanel(QWidget):
         self._silence_merge_ms = QSpinBox(); self._silence_merge_ms.setRange(0, 1000); self._silence_merge_ms.setValue(50)
         self._boundary_margin_ms = QSpinBox(); self._boundary_margin_ms.setRange(0, 500); self._boundary_margin_ms.setValue(100)
         self._energy_thr_db = QDoubleSpinBox(); self._energy_thr_db.setRange(-100, 0); self._energy_thr_db.setDecimals(1); self._energy_thr_db.setSingleStep(1.0); self._energy_thr_db.setValue(-40.0)
-        self._noise_loss_peak = QDoubleSpinBox(); self._noise_loss_peak.setRange(0.0001, 0.1); self._noise_loss_peak.setDecimals(4); self._noise_loss_peak.setSingleStep(0.001); self._noise_loss_peak.setValue(0.002)
-        self._noise_loss_ref_db = QDoubleSpinBox(); self._noise_loss_ref_db.setRange(-100, 0); self._noise_loss_ref_db.setDecimals(1); self._noise_loss_ref_db.setSingleStep(1.0); self._noise_loss_ref_db.setValue(-25.0)
-        self._dz_peak = QDoubleSpinBox(); self._dz_peak.setRange(0.0001, 0.1); self._dz_peak.setDecimals(4); self._dz_peak.setSingleStep(0.001); self._dz_peak.setValue(0.002)
-        self._dz_ref_db = QDoubleSpinBox(); self._dz_ref_db.setRange(-100, 0); self._dz_ref_db.setDecimals(1); self._dz_ref_db.setSingleStep(1.0); self._dz_ref_db.setValue(-30.0)
-        self._energy_drop_db = QDoubleSpinBox(); self._energy_drop_db.setRange(5, 60); self._energy_drop_db.setDecimals(1); self._energy_drop_db.setSingleStep(1.0); self._energy_drop_db.setValue(20.0)
-        self._residual_thr = QDoubleSpinBox(); self._residual_thr.setRange(0.001, 1); self._residual_thr.setDecimals(3); self._residual_thr.setValue(0.05)
-        self._centroid_thr = QDoubleSpinBox(); self._centroid_thr.setRange(1, 10000); self._centroid_thr.setValue(300)
-        self._rolloff_thr = QDoubleSpinBox(); self._rolloff_thr.setRange(1, 20000); self._rolloff_thr.setValue(500)
+        self._gain_drop_db = QDoubleSpinBox(); self._gain_drop_db.setRange(5, 60); self._gain_drop_db.setDecimals(1); self._gain_drop_db.setSingleStep(1.0); self._gain_drop_db.setValue(10.0)
+        self._min_anomaly_ms = QSpinBox(); self._min_anomaly_ms.setRange(10, 500); self._min_anomaly_ms.setValue(50)
 
         # 2컬럼 그리드 배치 (라벨, 입력 | 라벨, 입력)
         params = [
@@ -583,14 +559,8 @@ class ParamPanel(QWidget):
             ("Silence merge (ms)", self._silence_merge_ms),
             ("Boundary margin (ms)", self._boundary_margin_ms),
             ("Energy thr (dB)", self._energy_thr_db),
-            ("Noise loss peak", self._noise_loss_peak),
-            ("Noise loss ref (dB)", self._noise_loss_ref_db),
-            ("DZ peak thr", self._dz_peak),
-            ("DZ ref energy (dB)", self._dz_ref_db),
-            ("Energy drop (dB)", self._energy_drop_db),
-            ("Residual highlight", self._residual_thr),
-            ("Centroid (Hz)", self._centroid_thr),
-            ("Rolloff (Hz)", self._rolloff_thr),
+            ("Gain drop (dB)", self._gain_drop_db),
+            ("Min anomaly (ms)", self._min_anomaly_ms),
         ]
         for idx, (label_text, widget) in enumerate(params):
             row = idx // 2
@@ -613,14 +583,8 @@ class ParamPanel(QWidget):
             silence_merge_ms=self._silence_merge_ms.value(),
             silence_boundary_margin_ms=self._boundary_margin_ms.value(),
             dif_only_energy_threshold_db=self._energy_thr_db.value(),
-            noise_loss_peak_threshold=self._noise_loss_peak.value(),
-            noise_loss_ref_energy_db=self._noise_loss_ref_db.value(),
-            digital_zero_peak_threshold=self._dz_peak.value(),
-            digital_zero_ref_energy_db=self._dz_ref_db.value(),
-            energy_drop_db=self._energy_drop_db.value(),
-            residual_diff_threshold=self._residual_thr.value(),
-            centroid_diff_threshold_hz=self._centroid_thr.value(),
-            rolloff_diff_threshold_hz=self._rolloff_thr.value(),
+            gain_drop_db=self._gain_drop_db.value(),
+            min_anomaly_ms=self._min_anomaly_ms.value(),
         )
 
     def validate(self) -> list[str]:
@@ -679,23 +643,19 @@ class SingleResultPanel(QWidget):
         # 핵심 요약 통계 카드
         stats_row = QHBoxLayout()
         stats_row.setSpacing(8)
-        self._stat_dif_count = _stat_widget("-", "dif-only 묵음 수", Colors.ERROR)
-        self._stat_dif_total = _stat_widget("-", "dif-only 묵음 (ms)", Colors.WARNING)
-        self._stat_leakage = _stat_widget("-", "Silence Leakage", Colors.PAIR1)
-        self._stat_false_sil = _stat_widget("-", "False Silence", Colors.PAIR2)
+        self._stat_dif_count = _stat_widget("-", "dif-only 음성 깨짐 수", Colors.ERROR)
+        self._stat_dif_total = _stat_widget("-", "dif-only 깨짐 (ms)", Colors.WARNING)
         stats_row.addWidget(self._stat_dif_count)
         stats_row.addWidget(self._stat_dif_total)
-        stats_row.addWidget(self._stat_leakage)
-        stats_row.addWidget(self._stat_false_sil)
         self._layout.addLayout(stats_row)
 
-        # dif-only 묵음 이벤트 테이블
-        _, tbl_layout = _card("dif-only 묵음 이벤트", self._layout)
-        self._dif_only_table = QTableWidget(0, 4)
-        self._dif_only_table.setHorizontalHeaderLabels(["#", "길이 (ms)", "시작 (s)", "종료 (s)"])
+        # dif-only 이벤트 테이블
+        _, tbl_layout = _card("dif-only 이벤트", self._layout)
+        self._dif_only_table = QTableWidget(0, 5)
+        self._dif_only_table.setHorizontalHeaderLabels(["#", "구분", "길이 (ms)", "시작 (s)", "종료 (s)"])
         self._dif_only_table.verticalHeader().setVisible(False)
         self._dif_only_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self._dif_only_table.setMaximumHeight(160)
+        self._dif_only_table.setMaximumHeight(200)
         tbl_layout.addWidget(self._dif_only_table)
 
         # 지표 요약 텍스트
@@ -704,11 +664,6 @@ class SingleResultPanel(QWidget):
         self._metrics_label.setWordWrap(True)
         self._metrics_label.setStyleSheet(f"color: {Colors.TEXT}; font-size: 12px; line-height: 1.6; border: none;")
         info_layout.addWidget(self._metrics_label)
-
-        self._show_ref_silence = QCheckBox("ref 묵음 오버레이 표시")
-        self._show_ref_silence.setChecked(False)
-        self._show_ref_silence.stateChanged.connect(self._redraw)
-        info_layout.addWidget(self._show_ref_silence)
 
         # 지표 테이블 (스크롤 없이 전체 표시)
         _, mtbl_layout = _card("상세 지표", self._layout)
@@ -762,15 +717,39 @@ class SingleResultPanel(QWidget):
         sm = r.silence_metrics
         self._stat_dif_count.findChild(QLabel, "stat_value").setText(str(sm.dif_silence_count))
         self._stat_dif_total.findChild(QLabel, "stat_value").setText(f"{sm.dif_total_silence_ms:.0f}")
-        self._stat_leakage.findChild(QLabel, "stat_value").setText(f"{sm.silence_leakage:.3f}")
-        self._stat_false_sil.findChild(QLabel, "stat_value").setText(f"{sm.false_silence:.3f}")
 
-        self._dif_only_table.setRowCount(len(r.false_silence_segments))
-        for i, seg in enumerate(r.false_silence_segments):
+        # anomaly_segments + false_silence_segments 통합 이벤트 테이블
+        events: list[tuple[str, float, float, float]] = []
+
+        # anomaly_segments에서 이벤트 수집
+        for seg in r.anomaly_segments:
+            if seg.anomaly_type == "digital_zero":
+                label = "묵음"
+            elif seg.anomaly_type == "gain_drop":
+                label = "깨짐"
+            else:
+                label = "깨짐"
+            events.append((label, seg.duration_ms, seg.start_ms, seg.end_ms))
+
+        # anomaly가 비어있으면 false_silence_segments 폴백
+        if not events:
+            for seg in r.false_silence_segments:
+                events.append(("묵음", seg.duration_ms, seg.start_ms, seg.end_ms))
+
+        events.sort(key=lambda x: x[2])
+
+        self._dif_only_table.setRowCount(len(events))
+        for i, (label, dur, start, end) in enumerate(events):
             self._dif_only_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            self._dif_only_table.setItem(i, 1, QTableWidgetItem(f"{seg.duration_ms:.1f}"))
-            self._dif_only_table.setItem(i, 2, QTableWidgetItem(f"{seg.start_ms / 1000:.3f}"))
-            self._dif_only_table.setItem(i, 3, QTableWidgetItem(f"{seg.end_ms / 1000:.3f}"))
+            item_label = QTableWidgetItem(label)
+            if label == "깨짐":
+                item_label.setForeground(QColor(Colors.ERROR))
+            else:
+                item_label.setForeground(QColor(Colors.WARNING))
+            self._dif_only_table.setItem(i, 1, item_label)
+            self._dif_only_table.setItem(i, 2, QTableWidgetItem(f"{dur:.1f}"))
+            self._dif_only_table.setItem(i, 3, QTableWidgetItem(f"{start / 1000:.3f}"))
+            self._dif_only_table.setItem(i, 4, QTableWidgetItem(f"{end / 1000:.3f}"))
 
     def _update_metrics_label(self):
         r = self._result
@@ -778,18 +757,23 @@ class SingleResultPanel(QWidget):
             return
         sm = r.silence_metrics
         d = r.delay
+
+        # anomaly 요약
+        n_zero = sum(1 for s in r.anomaly_segments if s.anomaly_type == "digital_zero")
+        n_gain = sum(1 for s in r.anomaly_segments if s.anomaly_type == "gain_drop")
+        anomaly_text = f"<b>이상 검출:</b> 묵음 {n_zero}건, 깨짐 {n_gain}건"
+
         self._metrics_label.setText(
             f"<b>Delay:</b> {d.applied_delay_ms:.1f} ms "
             f"(coarse: {d.coarse_delay_ms:.1f}, refined: {d.refined_delay_ms:.1f}, DTW: {d.dtw_used})<br>"
+            f"{anomaly_text}<br>"
             f"<b>SNR:</b> {self._fmt(r.snr_db)} dB &nbsp; "
             f"<b>PESQ:</b> {self._fmt(r.pesq_score)} &nbsp; "
             f"<b>STOI:</b> {self._fmt(r.stoi_score)}<br>"
             f"<b>RMS diff:</b> {self._fmt(r.rms_diff_db)} dB &nbsp; "
             f"<b>Clipping:</b> {self._fmt(r.clipping_ratio)}<br>"
             f"<b>ref NF:</b> {self._fmt(r.ref_noise_floor_db)} dB &nbsp; "
-            f"<b>dif NF:</b> {self._fmt(r.dif_noise_floor_db)} dB<br>"
-            f"<b>Leakage:</b> {sm.silence_leakage:.4f} &nbsp; "
-            f"<b>False Silence:</b> {sm.false_silence:.4f}"
+            f"<b>dif NF:</b> {self._fmt(r.dif_noise_floor_db)} dB"
         )
 
     def _update_metric_table(self):
@@ -797,7 +781,12 @@ class SingleResultPanel(QWidget):
         if r is None:
             return
         sm = r.silence_metrics
+        n_zero = sum(1 for s in r.anomaly_segments if s.anomaly_type == "digital_zero")
+        n_gain = sum(1 for s in r.anomaly_segments if s.anomaly_type == "gain_drop")
         rows = [
+            ("이상 검출 (묵음)", str(n_zero), "0 = 정상", "dif에서 디지털 제로 구간 수"),
+            ("이상 검출 (깨짐)", str(n_gain), "0 = 정상", "dif에서 gain 변조 구간 수"),
+            ("이상 총 시간 (ms)", f"{sm.dif_total_silence_ms:.0f}", "0 = 정상", "이상 구간 총 지속 시간"),
             ("SNR (dB)", self._fmt(r.snr_db), ">20 good, >30 very good", "높을수록 좋음"),
             ("PESQ", self._fmt(r.pesq_score), "1.0 ~ 4.5", "높을수록 음질 좋음"),
             ("STOI", self._fmt(r.stoi_score), "0.0 ~ 1.0", "높을수록 명료도 좋음"),
@@ -805,8 +794,6 @@ class SingleResultPanel(QWidget):
             ("Clipping", self._fmt(r.clipping_ratio), "0.0 ~ 1.0", "0에 가까울수록 좋음"),
             ("ref NF (dB)", self._fmt(r.ref_noise_floor_db), "-100 ~ -20", "낮을수록 조용"),
             ("dif NF (dB)", self._fmt(r.dif_noise_floor_db), "-100 ~ -20", "ref와 비교"),
-            ("Silence Leakage", f"{sm.silence_leakage:.4f}", "0.0 ~ 1.0", "ref 묵음이 dif에서 깨진 비율"),
-            ("False Silence", f"{sm.false_silence:.4f}", "0.0 ~ 1.0", "ref 비묵음이 dif에서 묵음된 비율"),
         ]
         self._metric_table.setRowCount(len(rows))
         for i, row in enumerate(rows):
@@ -823,29 +810,6 @@ class SingleResultPanel(QWidget):
         if self._result is None:
             return default_value
         return float(getattr(self._result.config, name, default_value))
-
-    @staticmethod
-    def _mask_to_spans(mask: np.ndarray, min_len: int = 1, merge_gap: int = 0) -> list[tuple[int, int]]:
-        raw: list[tuple[int, int]] = []
-        start = None
-        for i, v in enumerate(mask):
-            if v and start is None:
-                start = i
-            elif (not v) and start is not None:
-                raw.append((start, i))
-                start = None
-        if start is not None:
-            raw.append((start, len(mask)))
-        if not raw:
-            return []
-        merged = [raw[0]]
-        for s, e in raw[1:]:
-            ps, pe = merged[-1]
-            if s - pe <= merge_gap:
-                merged[-1] = (ps, e)
-            else:
-                merged.append((s, e))
-        return [(s, e) for s, e in merged if (e - s) >= min_len]
 
     def _redraw(self):
         r = self._result
@@ -874,19 +838,16 @@ class SingleResultPanel(QWidget):
         self._waveform_ax[1].set_ylabel("Amp", fontsize=9)
         self._waveform_ax[1].set_xlabel("Time (s)", fontsize=9)
 
-        for seg in r.dif_silence_segments:
+        # ref 기준으로 y축 범위 통일
+        ref_ylim = self._waveform_ax[0].get_ylim()
+        self._waveform_ax[1].set_ylim(ref_ylim)
+
+        # anomaly_segments만 음영 (묵음=빨강, 깨짐=노랑)
+        for seg in r.anomaly_segments:
+            color = Colors.FALSE_SILENCE if seg.anomaly_type == "digital_zero" else Colors.LEAKAGE
+            alpha = 0.30 if seg.anomaly_type == "digital_zero" else 0.25
             for ax in self._waveform_ax:
-                ax.axvspan(seg.start_ms / 1000, seg.end_ms / 1000, alpha=0.20, color=Colors.SILENCE_DIF)
-        if self._show_ref_silence.isChecked():
-            for seg in r.ref_silence_segments:
-                for ax in self._waveform_ax:
-                    ax.axvspan(seg.start_ms / 1000, seg.end_ms / 1000, alpha=0.15, color=Colors.SILENCE_REF)
-        for seg in r.false_silence_segments:
-            for ax in self._waveform_ax:
-                ax.axvspan(seg.start_ms / 1000, seg.end_ms / 1000, alpha=0.30, color=Colors.FALSE_SILENCE)
-        for seg in r.silence_leakage_segments:
-            for ax in self._waveform_ax:
-                ax.axvspan(seg.start_ms / 1000, seg.end_ms / 1000, alpha=0.20, color=Colors.LEAKAGE)
+                ax.axvspan(seg.start_ms / 1000, seg.end_ms / 1000, alpha=alpha, color=color)
         self._waveform_fig.subplots_adjust(left=0.07, right=0.98, top=0.93, bottom=0.13, hspace=0.30)
         self._waveform_canvas.draw()
 
@@ -894,15 +855,6 @@ class SingleResultPanel(QWidget):
         self._diff_ax.cla()
         residual = ref_common - dif_common
         self._diff_ax.plot(t, residual, color="#7c3aed", linewidth=0.5)
-        thr = self._cfg("residual_diff_threshold", 0.05)
-        mask = np.abs(residual) >= thr
-        if len(t) > 1:
-            dt = float(t[1] - t[0])
-            spans = self._mask_to_spans(mask, min_len=max(1, int(round(0.03 / dt))), merge_gap=max(0, int(round(0.02 / dt))))
-        else:
-            spans = []
-        for s, e in spans:
-            self._diff_ax.axvspan(float(t[s]), float(t[e - 1]), alpha=0.22, color=Colors.ERROR)
         self._diff_ax.axhline(0, color=Colors.TEXT_MUTED, linewidth=0.5, alpha=0.5)
         self._diff_ax.set_title("Residual (ref - dif)", fontsize=10, color=Colors.TEXT)
         self._diff_ax.set_xlabel("Time (s)", fontsize=9)
@@ -926,13 +878,6 @@ class SingleResultPanel(QWidget):
         else:
             vol_diff_db = 0.0
         self._normdiff_ax.plot(t, norm_residual, color="#0ea5e9", linewidth=0.5)
-        mask_n = np.abs(norm_residual) >= thr
-        if len(t) > 1:
-            spans_n = self._mask_to_spans(mask_n, min_len=max(1, int(round(0.03 / dt))), merge_gap=max(0, int(round(0.02 / dt))))
-        else:
-            spans_n = []
-        for s, e in spans_n:
-            self._normdiff_ax.axvspan(float(t[s]), float(t[e - 1]), alpha=0.22, color=Colors.ERROR)
         self._normdiff_ax.axhline(0, color=Colors.TEXT_MUTED, linewidth=0.5, alpha=0.5)
         sign = "+" if vol_diff_db >= 0 else ""
         # dif가 ref의 몇 배인지 (소수점 둘째 자리 올림)
@@ -979,18 +924,12 @@ class SingleResultPanel(QWidget):
 
             self._ts_axes[0].plot(t_centroid, sp.ref_centroid, label="ref", color=Colors.REF_COLOR, linewidth=0.7)
             self._ts_axes[0].plot(t_centroid[:len(sp.dif_centroid)], sp.dif_centroid, label="dif", color=Colors.DIF_COLOR, linewidth=0.7)
-            cdiff = np.abs(sp.ref_centroid - sp.dif_centroid)
-            for s, e in self._mask_to_spans(cdiff >= self._cfg("centroid_diff_threshold_hz", 300), min_len=3, merge_gap=2):
-                self._ts_axes[0].axvspan(float(t_centroid[s]), float(t_centroid[min(e - 1, n_frames_c - 1)]), alpha=0.22, color=Colors.ERROR)
             self._ts_axes[0].set_title("Spectral Centroid", fontsize=10, color=Colors.TEXT)
             self._ts_axes[0].set_ylabel("Hz", fontsize=9)
             self._ts_axes[0].legend(fontsize=8, facecolor=Colors.CARD, edgecolor=Colors.BORDER, labelcolor=Colors.TEXT)
 
             self._ts_axes[1].plot(t_rolloff, sp.ref_rolloff, label="ref", color=Colors.REF_COLOR, linewidth=0.7)
             self._ts_axes[1].plot(t_rolloff[:len(sp.dif_rolloff)], sp.dif_rolloff, label="dif", color=Colors.DIF_COLOR, linewidth=0.7)
-            rdiff = np.abs(sp.ref_rolloff - sp.dif_rolloff)
-            for s, e in self._mask_to_spans(rdiff >= self._cfg("rolloff_diff_threshold_hz", 500), min_len=3, merge_gap=2):
-                self._ts_axes[1].axvspan(float(t_rolloff[s]), float(t_rolloff[min(e - 1, n_frames_r - 1)]), alpha=0.22, color=Colors.ERROR)
             self._ts_axes[1].set_title("Spectral Rolloff", fontsize=10, color=Colors.TEXT)
             self._ts_axes[1].set_ylabel("Hz", fontsize=9)
             self._ts_axes[1].set_xlabel("Time (s)", fontsize=9)

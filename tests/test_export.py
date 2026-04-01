@@ -162,10 +162,10 @@ def test_export_html_file_created():
         assert "SNR" in content
         assert "PESQ" in content
         assert "STOI" in content
-        assert "Silence Leakage" in content
+        assert "이상 검출" in content
         # 차트 이미지 (base64) 포함 확인
         assert "data:image/png;base64," in content
-        # 묵음 이벤트 테이블 확인
+        # 이벤트 테이블 확인
         assert "dif-only" in content
     finally:
         plt.close(fig)

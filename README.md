@@ -1,52 +1,28 @@
 # Audio Quality Analyzer
 
-`ref`와 `dif` WAV를 비교해서 지연 보정, 묵음 차이, 품질 지표, 스펙트럼 차이를 분석하는 데스크톱 툴입니다.
+ref(원본 전송음)와 dif(수신 녹음본) WAV 파일을 비교하여 지연 보정, 이상 구간 검출(묵음/깨짐), 음질 지표, 스펙트럼 분석을 수행하는 데스크톱 도구입니다.
 
-## 1. 샘플 오디오
+## 핵심 기능
 
-`sample_audio/` 디렉토리:
+- Cross-correlation + DTW 기반 지연 추정 및 자동 보정
+- 주변 대비 ratio 급변 + correlation 기반 이상 구간 검출 (묵음/깨짐)
+- 음질 지표: SNR, PESQ, STOI, RMS diff, Clipping, Noise Floor
+- 스펙트럼 분석: Spectrogram, Spectral Centroid/Rolloff, Pitch, ZCR
+- JSON / CSV / PNG / HTML 결과 내보내기
+- PyQt5 다크 테마 GUI, 듀얼 페어 비교 분석
 
-- `ref.wav` — 기준 음원
-- `dif_2+shift.wav` — 비교 음원 (기본 비교 대상)
-- `dif_shift.wav`, `dif_3.wav` — 추가 비교 음원
-- `dating_SPEAKER_00.wav`, `dating_SPEAKER_00_AOS.wav` — 화자 0 샘플
-- `dating_SPEAKER_01.wav`, `dating_SPEAKER_01_iOS.wav` — 화자 1 샘플
+## 이상 검출 알고리즘
 
-기본 비교 시나리오: `ref.wav` vs `dif_2+shift.wav`
+ref 대비 dif의 묵음과 음깨짐을 사람이 느끼는 수준으로 감지합니다.
 
-## 2. 핵심 기능
+- 프레임별 ref/dif RMS, peak, correlation 계산 (20ms 프레임, 10ms 홉)
+- 주변 1초 구간의 ratio 중앙값 대비 급격한 하락 검출
+- `digital_zero` (묵음): dif peak ≈ 0 + ref 음성 구간, 최소 50ms
+- `gain_drop` (깨짐 Type A): ratio 급락 + correlation > 0.3, 최소 50ms
+- `gain_drop` (깨짐 Type B): ratio 급락 + 100ms 이상 지속 (gap 허용 병합)
+- 묵음 직후 200ms 이내의 distortion은 복구 과정으로 제외
 
-- WAV 로드/검증, 샘플 정규화 (`audio_io.py`)
-- ref 기준 sample rate/channel 포맷 정렬 (`audio_io.py`)
-- Cross-correlation + DTW 지연 추정/보정, MAE 기반 자동 선택 (`delay.py`, `analyzer.py`)
-- log-energy + WebRTC VAD + ZCR 앙상블 묵음 검출 (`vad.py`)
-- silence leakage, false silence, dif-only silence 지표 (`silence_metrics.py`)
-- SNR, PESQ, STOI, RMS diff, clipping, noise floor (`metrics.py`)
-- spectrogram, spectral centroid/rolloff, pitch, ZCR (`spectrum.py`)
-- JSON / CSV / PNG 결과 내보내기 (`export.py`)
-
-## 3. UI 기능 (`main.py`)
-
-- ref/dif 파일 선택 및 분석 파라미터 패널
-- Waveform 오버레이 (dif silence, ref silence 토글, false silence, silence leakage)
-- Residual waveform (ref - dif) 및 차이 하이라이트
-- Spectrogram (ref 위, dif delay-corrected 아래)
-- Spectral centroid/rolloff 시계열 및 차이 하이라이트
-- 지표 요약 + 해설 테이블 (값, 참고 범위, 해석 가이드)
-- Primary Outcome 패널 (dif-only silence count/total)
-
-## 4. 분석 파라미터
-
-기본 파라미터: `frame_ms`, `hop_ms`, `noise_floor_percentile`, `energy_margin_db`, `vad_aggressiveness`, `zcr_threshold`, `min_silence_ms`, `silence_merge_ms`
-
-v2 추가 파라미터 (차이 하이라이트 임계값):
-- `residual_diff_threshold` (기본 0.05)
-- `centroid_diff_threshold_hz` (기본 300.0)
-- `rolloff_diff_threshold_hz` (기본 500.0)
-
-임계값을 올리면 하이라이트 구간이 줄어들고, 내리면 더 많이 표시됩니다.
-
-## 5. 실행 방법
+## 실행 방법
 
 ```powershell
 python -m venv venv
@@ -55,53 +31,77 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## 6. 테스트
+## 테스트
 
 ```powershell
 venv\Scripts\python -m pytest tests/ -q
 ```
 
-`sample_audio/ref.wav`, `sample_audio/dif_2+shift.wav`가 없으면 일부 회귀 테스트는 skip됩니다.
+`sample_audio/` 디렉토리에 WAV 파일이 없으면 일부 회귀 테스트는 skip됩니다.
 
-## 7. 모듈 구조
+## 모듈 구조
 
 | 파일 | 역할 |
 |---|---|
-| `main.py` | PyQt5 UI 엔트리포인트 |
-| `analyzer.py` | 분석 파이프라인 Facade (지연 보정 가드레일 포함) |
+| `main.py` | PyQt5 GUI 엔트리포인트 |
+| `analyzer.py` | 분석 파이프라인 Facade |
 | `audio_io.py` | WAV 로드, 포맷 정규화, 리샘플링 |
 | `delay.py` | Cross-correlation + DTW 지연 보정 |
-| `vad.py` | 묵음 판별 앙상블 |
+| `vad.py` | 묵음 판별 앙상블 (log-energy + WebRTC VAD + ZCR) |
+| `silence_metrics.py` | 이상 구간 검출 (주변 대비 ratio 급변 + correlation) |
 | `metrics.py` | SNR, PESQ, STOI, RMS, Clipping, Noise Floor |
-| `spectrum.py` | 스펙트럼 분석 (centroid, rolloff, pitch, ZCR, spectrogram) |
-| `silence_metrics.py` | 묵음 지표 (leakage, false silence, dif-only) |
-| `export.py` | JSON / CSV / PNG 저장 |
+| `spectrum.py` | 스펙트럼 분석 |
+| `export.py` | JSON / CSV / PNG / HTML 저장 |
 | `models.py` | 데이터 모델 (dataclass) |
 | `errors.py` | 오류 코드 및 예외 클래스 |
 | `tests/` | pytest 테스트 |
 | `unused_scripts/` | 미사용 레거시 스크립트 |
 
-## 8. 출력 데이터 해석
+## 출력 데이터 해석
 
-- `Delay`: 적용된 최종 지연(ms). coarse/refined 중 MAE가 낮은 값 자동 선택
-- `SNR`: 높을수록 ref와 유사
-- `PESQ`: 1.0~4.5, 높을수록 지각 품질 우수
-- `STOI`: 0.0~1.0, 높을수록 명료도 유사
-- `RMS diff`: 0 dB에 가까울수록 레벨 유사
-- `Clipping ratio`: 0에 가까울수록 좋음 (±0.999 이상 샘플 비율)
-- `Noise floor`: 더 낮은(dB 음수 큼) 값이 더 조용한 배경
-- `Silence leakage`: ref 묵음이 dif에서 깨진 비율
-- `False silence`: ref 비묵음이 dif에서 묵음으로 판정된 비율
-- `dif-only silence`: ref와 겹치지 않는 dif 추가 묵음 이벤트/총시간
+| 지표 | 설명 |
+|---|---|
+| Delay | 적용된 최종 지연(ms). coarse/refined 중 MAE가 낮은 값 자동 선택 |
+| 이상 검출 (묵음) | dif에서 디지털 제로 구간 수 (0 = 정상) |
+| 이상 검출 (깨짐) | dif에서 gain 변조 구간 수 (0 = 정상) |
+| SNR (dB) | 높을수록 ref와 유사 |
+| PESQ | 1.0~4.5, 높을수록 음질 좋음 |
+| STOI | 0.0~1.0, 높을수록 명료도 유사 |
+| RMS diff (dB) | 0에 가까울수록 레벨 유사 |
+| Clipping | 0에 가까울수록 좋음 |
+| Noise floor (dB) | 낮을수록 조용한 배경 |
 
-## 9. 주의사항
+## 주의사항
 
-- `PESQ`는 C++ 컴파일러가 필요하며, 미설치 시 `N/A`로 표시됩니다. 다른 지표는 정상 계산됩니다.
+- PESQ는 C++ 컴파일러가 필요하며, 미설치 시 N/A로 표시됩니다.
 - 삽입/삭제 편집이 큰 파일은 DTW refine이 불안정할 수 있어 자동 fallback(coarse) 로직을 사용합니다.
 
-## 10. PESQ 설치 (Windows)
+### PESQ 설치 (Windows)
 
 ```powershell
 # Microsoft C++ Build Tools 설치 필요: https://visualstudio.microsoft.com/visual-cpp-build-tools/
 venv\Scripts\python -m pip install pesq
 ```
+
+## 단일 스크립트 (다른 프로젝트에서 import)
+
+`audio_anomaly_detector.py` 파일 하나만으로 이상 검출 기능을 사용할 수 있습니다.
+GUI, 스펙트럼 분석 등 부가 기능 없이 핵심 검출 결과만 반환합니다.
+
+```python
+from audio_anomaly_detector import detect_dif_only_events
+
+events = detect_dif_only_events("ref.wav", "dif.wav")
+for e in events:
+    print(f"#{e['index']} [{e['type']}] {e['duration_ms']:.0f}ms "
+          f"({e['start_s']:.3f}s ~ {e['end_s']:.3f}s)")
+```
+
+필수 라이브러리: `numpy`, `scipy`, `soundfile`
+
+CLI로도 실행 가능합니다:
+```powershell
+python audio_anomaly_detector.py ref.wav dif.wav
+```
+
+사용 예시는 `sample_usage.py`를 참고하세요.

@@ -1,5 +1,187 @@
 # Changelog
 
+## [3.3.1] - 2026-04-01
+
+### .gitignore 정리 및 IDE 설정 tracked 제거
+- `.gitignore`를 프로젝트에 필요한 규칙만 남기도록 전면 정리 (Django, Flask, Scrapy 등 미사용 프레임워크 규칙 제거)
+- `.kiro/` 디렉토리 gitignore 추가 (IDE 개인 설정)
+- `sample_audio/` 디렉토리 단위 gitignore 추가 (기존 `*.wav`에 추가하여 이중 보호)
+- 이미 tracked 되어 있던 `.kiro/` 내 9개 파일을 `git rm --cached`로 인덱스에서 제거 (로컬 파일 유지)
+
+## [3.3.0] - 2026-04-01
+
+### 단일 스크립트 배포용 파일 추가
+- `audio_anomaly_detector.py` — 외부 프로젝트에서 import하여 사용할 수 있는 self-contained 스크립트. WAV 로드, 리샘플링, 지연 보정(CC+DTW), 이상 검출 로직을 단일 파일에 통합. 필수 라이브러리는 numpy, scipy, soundfile만 필요
+- `sample_usage.py` — `detect_dif_only_events()` 함수 호출 예시 스크립트
+- `detect_dif_only_events(ref_path, dif_path) -> list[dict]` 함수가 GUI의 'dif-only 이벤트' 테이블과 동일한 결과를 반환
+- CLI 실행 지원: `python audio_anomaly_detector.py ref.wav dif.wav`
+- `README.md`에 단일 스크립트 사용법 섹션 추가
+
+## [3.2.0] - 2026-04-01
+
+### 깨짐 Type B 오탐 방지 강화
+- Type B ratio 임계값 강화: `context_med * 0.4` → `context_med * 0.35` (더 극단적인 하락만 검출)
+- Type B 최소 지속시간 상향: 100ms → 120ms (짧은 전송 jitter 오탐 제거)
+- A_dating_SPEAKER_00 + A_Android_ixiO_20260327_172033 Pair에서 발생하던 오탐 2건 제거
+- 기존 Pair1~4 정답 검출에 영향 없음 확인
+
+### 회귀 테스트 추가
+- `tests/test_regression_ref_dif.py`에 Pair5(A_dating + A_Android → 정상, 이상 0건) 테스트 추가
+
+## [3.1.1] - 2026-04-01
+
+### 파형 차트 y축 범위 통일
+- ref/dif 파형 차트의 y축 범위를 ref 기준으로 통일하여 진폭 비교가 직관적으로 가능하도록 개선
+
+## [3.1.0] - 2026-04-01
+
+### GUI 차트 음영 정리 및 코드 클린업
+- 파형 차트(ref/dif): anomaly_segments(묵음/깨짐)만 음영 처리, 기존 dif_silence/ref_silence 오버레이 제거
+- "ref 묵음 오버레이 표시" 체크박스 제거 (QCheckBox import, 스타일 포함)
+- Residual, Volume Normalized Residual, Spectral Centroid, Spectral Rolloff 차트의 차이 하이라이트 음영 모두 제거
+
+### 미사용 코드 제거
+- `AnalysisConfigV2`에서 overlay threshold 필드 3개 제거 (`residual_diff_threshold`, `centroid_diff_threshold_hz`, `rolloff_diff_threshold_hz`) → 빈 서브클래스로 단순화
+- `analyzer.py` validate_config에서 overlay threshold 검증 제거
+- `export.py` save_json에서 overlay threshold JSON 출력 제거
+- `main.py` ParamPanel에서 Residual highlight / Centroid / Rolloff 위젯 3개 제거
+- `main.py` SingleResultPanel에서 `_mask_to_spans` 메서드, `SILENCE_DIF`/`SILENCE_REF` 색상 상수 제거
+
+### 미사용 스크립트 이동
+- `explore_audio.py`, `explore_v2.py`~`explore_v10.py`, `explore_v7_debug.py`, `debug_final.py` (12개) → `unused_scripts/`로 이동
+
+### 테스트 업데이트
+- `tests/test_analyzer_v2.py` — overlay threshold 테스트 제거, 하위 호환 테스트로 재작성
+
+### 문서 최신화
+- `README.md` — 현재 기능에 맞게 전면 재작성
+- `.kiro/steering/structure.md` — test_analyzer_v2 설명 갱신
+- `.kiro/specs/audio-quality-analyzer/design.md` — AnalysisConfigV2, validate_config, silence_metrics 섹션 갱신
+
+## [3.0.0] - 2026-04-01
+
+### 이상 검출 알고리즘 전면 재설계 (주변 대비 ratio 급변 + correlation 기반)
+- 기존 "음절 내 RMS ratio 중앙값" 방식을 폐기하고, **주변 1초 context 대비 ratio 급변 + 프레임 correlation** 기반 새 알고리즘으로 완전 교체
+- 4개 정답 Pair에서 각 1건씩 정확히 검출, 오탐 0건 달성:
+  - Pair1: 묵음 1회 (1.02s, digital_zero) ✓
+  - Pair2: 깨짐 1회 (2.73s, gain_drop) ✓
+  - Pair3: 묵음 1회 (72.47s, digital_zero) ✓
+  - Pair4: 깨짐 1회 (72.61s, gain_drop) ✓
+
+### 새 알고리즘 상세
+- 프레임별 ref/dif RMS, peak, Pearson correlation 계산 (20ms 프레임, 10ms 홉)
+- 주변 1초 구간(현재 ±200ms 제외)의 ratio 중앙값(context_med) 산출
+- **묵음(digital_zero)**: dif_peak < 0.0005 + ref_rms > 0.03, 최소 50ms 연속
+- **깨짐 Type A(gain_drop)**: ratio < context_med×0.4 + correlation > 0.3 (파형 유사, gain만 변화), 최소 50ms
+- **깨짐 Type B(gain_drop)**: ratio < context_med×0.4 + 100ms 이상 지속 (gap 3프레임 허용 병합)
+- 묵음 직후 200ms 이내의 distortion은 신호 복구 과정으로 제외하여 오탐 방지
+
+### 파일 변경
+- `silence_metrics.py` — 완전 재작성 (`detect_anomalies`, `_compute_frame_features`, `_compute_context_median`, `_find_segments`, `_find_segments_with_gap` 등)
+- `tests/test_silence_metrics.py` — 새 알고리즘에 맞게 재작성 (10건)
+- `tests/test_regression_ref_dif.py` — 4개 Pair 정답 기반 회귀 테스트로 재작성 (8건: Pair별 검출 수·위치·유형 검증)
+
+### steering 문서 업데이트
+- `product.md` — 이상 검출 알고리즘 섹션을 새 로직으로 갱신
+- `structure.md` — silence_metrics.py 설명 변경, 이상 검출 흐름 갱신
+
+## [2.3.0] - 2026-04-01
+
+### 이상 검출 알고리즘 고도화 (음절 내 RMS ratio 중앙값 기반 v2)
+- `silence_metrics.py` 완전 재작성: 기존 단순 프레임별 비교 + 다중 필터(경계 확장, 에너지 재검증, 잡음 소실 필터, 디지털 제로 검출) 파이프라인을 **음절(utterance) 내 RMS ratio 중앙값 기반 단일 알고리즘**으로 통합
+- 핵심 함수: `detect_anomalies()`, `_compute_frame_stats()`, `_identify_utterances()`, `_detect_anomaly_frames()`, `_merge_anomaly_frames()`
+- 기존 `_expand_segments`, `_verify_energy`, `_filter_noise_loss`, `_detect_digital_zero_segments` 등 6개 내부 함수 제거 → 코드량 514행 → 295행으로 42% 감소
+
+### 데이터 모델 정리
+- `models.py`: `AnomalySegment` dataclass 추가 (`anomaly_type`, `mean_gain_db`, `mean_correlation`)
+- `AnalysisConfig`에 이상 검출 전용 파라미터 7개 추가 (`anomaly_frame_ms`, `anomaly_hop_ms`, `ref_silence_rms`, `digital_zero_threshold`, `gain_drop_db`, `min_anomaly_ms`, `anomaly_merge_ms`)
+- `AnalysisResult`에 `anomaly_segments` 필드 추가, 음질 지표 필드에 default_factory 적용
+- 기존 주석 정리 (불필요한 인라인 주석 제거)
+
+### GUI 분석 결과 UI 재구성
+- 상단 통계 카드: Silence Leakage / False Silence 제거 → "dif-only 음성 깨짐 수", "dif-only 깨짐 (ms)" 2개로 축소
+- "dif-only 묵음 이벤트" → "dif-only 이벤트"로 이름 변경, "구분" 컬럼 추가 (묵음/깨짐 색상 구분)
+- 파형 차트에 anomaly_segments 기반 음영 추가 (digital_zero=빨강, gain_drop=노랑)
+- 분석 지표 텍스트에 "이상 검출: 묵음 N건, 깨짐 N건" 추가
+- 상세 지표 테이블: 이상 검출(묵음/깨짐), 이상 총 시간 3행 추가, Silence Leakage/False Silence 행 제거
+- 파라미터 패널: 구 silence_metrics 전용 파라미터 6개 제거 → Gain drop (dB) / Min anomaly (ms) 2개로 교체
+
+### export 업데이트
+- HTML 리포트: 동일한 UI 변경 반영 (통계 카드, 이벤트 테이블 구분 컬럼, 이상 검출 요약, 상세 지표)
+- JSON 내보내기: `anomaly_segments` 배열 추가 (type, start_ms, end_ms, mean_gain_db 포함)
+
+### analyzer 연동
+- `analyzer.py`에서 `detect_anomalies()` 호출 추가, `anomaly_segments`를 `AnalysisResult`에 포함
+
+### 테스트 재작성
+- `tests/test_silence_metrics.py` — 완전 재작성 (10건: detect_anomalies 단위 테스트 6건, _difference_segments 3건, compute_silence_metrics 통합 1건)
+- `tests/test_regression_ref_dif.py` — 재작성 (3건: B_iOS_dif_1 디지털 제로 검출, B_iOS_dif_gain 디지털 제로 0건 + gain_drop 검출, 레거시 샘플 호환)
+- `tests/test_export.py` — HTML 검증 assertion을 새 UI에 맞게 업데이트 ("이상 검출" 키워드)
+- 구 API 전용 `tests/test_silence_boundary_energy.py` 삭제
+
+### steering 문서 업데이트
+- `product.md` — 이상 검출 알고리즘 섹션 추가, HTML 내보내기·듀얼 페어 비교 반영
+- `structure.md` — silence_metrics.py 설명 변경, 누락 테스트 파일 추가, 파이프라인 흐름에 이상 검출 단계 반영, 주요 데이터 모델 섹션 추가
+- `tech.md` — 회귀 테스트 패턴, AnomalySegment 처리 컨벤션, default_factory 패턴 추가
+
+## [2.2.0] - 2026-04-01
+
+### 이상 검출 알고리즘 재설계 (음절 내 RMS ratio 중앙값 기반)
+- 기존 단순 프레임별 RMS 비교 방식에서 전송 jitter로 인한 오탐 다수 발생
+- 새 알고리즘: ref RMS 기반 음절(utterance) 식별 → 음절 내 dif/ref ratio 중앙값 산출 → 중앙값 대비 급격한 하락(< 40%)만 이상으로 판정
+- 연속 5프레임(50ms) 이상인 구간만 보고하여 산발적 jitter 오탐 완전 제거
+- 검증 결과: dif_gain → gain_drop 1건(2730ms), dif_1 → digital_zero 1건(1020ms) 정확히 일치
+- `silence_metrics.py` 완전 재작성 (`_identify_utterances`, `_detect_anomaly_frames`, `_compute_frame_stats` 등)
+
+## [2.1.1] - 2026-04-01
+
+### gain_drop_db 기본값 조정 (20 → 10)
+- dif_gain의 -9~-11.5dB gain 변조 구간이 검출되지 않던 문제 수정
+- `models.py`의 `gain_drop_db` 기본값을 20.0 → 10.0으로 변경
+- `main.py` ParamPanel 기본값 동기화
+- 회귀 테스트에 dif_gain gain_drop 검출 assertion 추가
+
+## [2.1.0] - 2026-04-01
+
+### GUI 분석 결과 UI 재구성
+- 상단 통계 카드: Silence Leakage / False Silence 제거 → "dif-only 음성 깨짐 수", "dif-only 깨짐 (ms)" 2개로 축소
+- "dif-only 묵음 이벤트" → "dif-only 이벤트"로 이름 변경, "구분" 컬럼 추가 (묵음/깨짐 색상 구분)
+- 파형 차트(ref/dif)에 anomaly_segments 기반 음영 추가 (digital_zero=빨강, gain_drop=노랑)
+- 분석 지표 텍스트에 "이상 검출: 묵음 N건, 깨짐 N건" 추가
+- 상세 지표 테이블: 이상 검출(묵음/깨짐), 이상 총 시간 3행 추가, Silence Leakage/False Silence 행 제거
+- 파라미터 패널: 구 silence_metrics 전용 파라미터 6개 제거, Gain drop (dB) / Min anomaly (ms) 2개 추가
+
+### export 업데이트
+- HTML 리포트: 동일한 UI 변경 반영 (통계 카드, 이벤트 테이블 구분 컬럼, 상세 지표)
+- JSON 내보내기: `anomaly_segments` 배열 추가 (type, start_ms, end_ms, mean_gain_db 포함)
+
+### 테스트
+- `tests/test_export.py` HTML 검증 assertion을 새 UI에 맞게 업데이트
+
+## [2.0.0] - 2026-04-01
+
+### 이상 구간 검출 로직 전면 재작성
+- 기존 앙상블 묵음 검출(energy + VAD + ZCR) 기반 dif-only 묵음 판정을 **프레임별 RMS 비교 기반 이상 구간 검출**로 교체
+- 검출 가능 유형: `digital_zero`(음 빠짐), `gain_drop`(gain 변조)
+- 프레임 단위로 ref RMS, dif peak, RMS ratio를 계산하여 판정 → 연속 이상 프레임 병합 → min/merge 필터링
+- `AnomalySegment` dataclass 신규 추가 (`anomaly_type`, `mean_gain_db`, `mean_correlation` 포함)
+- `AnalysisResult`에 `anomaly_segments` 필드 추가
+- 기존 UI/export 호환을 위해 `SilenceMetrics`, `false_silence_segments` 인터페이스 유지
+
+### 파일 변경
+- `silence_metrics.py` — 완전 재작성 (`detect_anomalies`, `_classify_frame`, `_merge_anomaly_frames` 등)
+- `analyzer.py` — 새 silence_metrics 연동, `anomaly_segments` 결과 조립 추가
+- `models.py` — `AnomalySegment` 추가, `AnalysisConfig`에 이상 검출 파라미터 7개 추가 (`anomaly_frame_ms`, `digital_zero_threshold`, `gain_drop_db` 등)
+
+### 기존 파일 백업
+- 변경 전 전체 스크립트를 `unused_scripts/backup_260401/`에 백업
+
+### 테스트
+- `tests/test_silence_metrics.py` — 재작성 (10건: 디지털 제로 검출, gain drop 검출, ref 묵음 제외, 빈 입력, 짧은 이상 필터링, 차집합 연산, 통합 테스트)
+- `tests/test_regression_ref_dif.py` — 재작성 (3건: B_iOS_dif_1 디지털 제로 1건 검출, B_iOS_dif_gain 디지털 제로 0건, 레거시 샘플 호환)
+- 구 API 전용 `tests/test_silence_boundary_energy.py` 삭제 (백업 보관)
+- 전체 59건 통과
+
 ## [1.7.0] - 2026-03-31
 
 ### 잡음 소실(noise loss) 필터 추가

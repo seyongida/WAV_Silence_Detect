@@ -20,13 +20,22 @@ class AnalysisConfig:
     zcr_threshold: float = 0.1          # ZCR 임계값
     min_silence_ms: int = 200           # 최소 묵음 지속 시간 (ms)
     silence_merge_ms: int = 50          # 묵음 병합 간격 (ms)
-    silence_boundary_margin_ms: int = 100   # 묵음 경계 확장 마진 (ms) — 차집합 전 ref 묵음 양쪽 확장
-    dif_only_energy_threshold_db: float = -40.0  # dif-only 구간 에너지 재검증 임계값 (dB)
-    noise_loss_peak_threshold: float = 0.002     # dif 디지털 제로 판정 peak 임계값
-    noise_loss_ref_energy_db: float = -25.0      # ref 미세 잡음 판정 에너지 임계값 (dB)
-    digital_zero_peak_threshold: float = 0.002   # 디지털 제로 검출 peak 임계값
-    digital_zero_ref_energy_db: float = -30.0    # 디지털 제로 검출 시 ref 에너지 하한 (dB, 이상이면 인위적 묵음)
-    energy_drop_db: float = 20.0                 # dif-ref 에너지 드롭 임계값 (dB, 이 이상 차이나면 인위적 묵음)
+    silence_boundary_margin_ms: int = 100   # 묵음 경계 확장 마진 (ms)
+    dif_only_energy_threshold_db: float = -40.0
+    noise_loss_peak_threshold: float = 0.002
+    noise_loss_ref_energy_db: float = -25.0
+    digital_zero_peak_threshold: float = 0.002
+    digital_zero_ref_energy_db: float = -30.0
+    energy_drop_db: float = 20.0
+
+    # 프레임별 이상 검출 파라미터
+    anomaly_frame_ms: int = 20          # 이상 검출 프레임 길이 (ms)
+    anomaly_hop_ms: int = 10            # 이상 검출 홉 길이 (ms)
+    ref_silence_rms: float = 0.005      # ref 묵음 판정 RMS 임계값
+    digital_zero_threshold: float = 1e-6  # 디지털 제로 판정 임계값
+    gain_drop_db: float = 10.0          # gain 변조 판정 임계값 (dB)
+    min_anomaly_ms: int = 50            # 최소 이상 구간 지속 시간 (ms)
+    anomaly_merge_ms: int = 20          # 이상 구간 병합 간격 (ms)
 
 
 @dataclass
@@ -34,8 +43,8 @@ class AnalysisMessage:
     """분석 중 발생한 로그 메시지."""
 
     level: str      # "info" | "warn" | "error"
-    message: str    # 메시지 내용
-    timestamp: str  # ISO 8601 형식 (예: "2024-01-01T12:00:00.000Z")
+    message: str
+    timestamp: str  # ISO 8601
 
 
 @dataclass
@@ -43,78 +52,90 @@ class AudioData:
     """로드된 오디오 신호와 메타데이터."""
 
     samples: np.ndarray     # float32, shape: (n_samples,) 또는 (n_samples, n_channels)
-    sample_rate: int        # 샘플레이트 (Hz)
-    n_channels: int         # 채널 수
-    duration_sec: float     # 길이 (초)
-    file_path: str          # 원본 파일 경로
+    sample_rate: int
+    n_channels: int
+    duration_sec: float
+    file_path: str
 
 
 @dataclass
 class Frame:
     """분석 단위 오디오 구간."""
 
-    index: int                          # 프레임 인덱스
-    start_ms: float                     # 시작 시간 (ms)
-    end_ms: float                       # 종료 시간 (ms)
-    samples: np.ndarray                 # 해당 구간 샘플
+    index: int
+    start_ms: float
+    end_ms: float
+    samples: np.ndarray
     log_energy: float | None = None
     zcr: float | None = None
-    vad_speech: bool | None = None      # webrtcvad 결과 (True=음성)
-    energy_silence: bool | None = None  # 에너지 기반 묵음 판별 결과
-    final_silence: bool | None = None   # 앙상블 최종 묵음 판별 결과
+    vad_speech: bool | None = None
+    energy_silence: bool | None = None
+    final_silence: bool | None = None
 
 
 @dataclass
 class SilenceSegment:
     """묵음 구간 정보."""
 
-    start_ms: float     # 시작 시간 (ms)
-    end_ms: float       # 종료 시간 (ms)
-    duration_ms: float  # 지속 시간 (ms)
+    start_ms: float
+    end_ms: float
+    duration_ms: float
+
+
+@dataclass
+class AnomalySegment:
+    """이상 구간 정보 (프레임별 correlation 기반 검출)."""
+
+    start_ms: float
+    end_ms: float
+    duration_ms: float
+    anomaly_type: str       # "digital_zero" | "gain_drop" | "distortion"
+    mean_gain_db: float     # 구간 평균 gain (dB), 정상=0 근처
+    mean_correlation: float # 구간 평균 Pearson correlation
 
 
 @dataclass
 class DelayResult:
     """지연 보정 계산 결과."""
 
-    coarse_delay_ms: float      # Cross-correlation으로 추정한 coarse 지연량 (ms)
-    refined_delay_ms: float     # DTW로 세부 보정한 지연량 (ms)
-    applied_delay_ms: float     # 실제 적용된 최종 지연량 (ms)
-    dtw_used: bool              # DTW 세부 보정 적용 여부
+    coarse_delay_ms: float
+    refined_delay_ms: float
+    applied_delay_ms: float
+    dtw_used: bool
 
 
 @dataclass
 class SilenceMetrics:
-    """묵음 관련 지표 (수치만 포함, 구간 목록은 AnalysisResult에서 관리)."""
+    """묵음 관련 지표."""
 
     silence_leakage: float      # ref 묵음 중 dif에 소리가 있는 비율 (0~1)
     false_silence: float        # ref Non-Silence 중 dif가 묵음인 비율 (0~1)
-    dif_silence_count: int      # dif 묵음 구간 총 개수
-    dif_total_silence_ms: float # dif 묵음 총 시간 (ms)
+    dif_silence_count: int      # dif 이상 구간 총 개수
+    dif_total_silence_ms: float # dif 이상 구간 총 시간 (ms)
 
 
 @dataclass
 class SpectrogramData:
     """스펙트로그램 데이터."""
 
-    magnitude_db: np.ndarray    # shape: (n_freq, n_time), dB 스케일
-    frequencies: np.ndarray     # 주파수 축 (Hz)
-    times: np.ndarray           # 시간 축 (s)
+    magnitude_db: np.ndarray
+    frequencies: np.ndarray
+    times: np.ndarray
 
 
 @dataclass
 class SpectrumData:
     """스펙트럼 분석 결과."""
 
-    ref_centroid: np.ndarray        # ref Spectral Centroid 시계열 (Hz)
-    dif_centroid: np.ndarray        # dif Spectral Centroid 시계열 (Hz)
-    ref_rolloff: np.ndarray         # ref Spectral Rolloff 시계열 (Hz)
-    dif_rolloff: np.ndarray         # dif Spectral Rolloff 시계열 (Hz)
-    ref_pitch: np.ndarray           # ref 피치 시계열 (Hz, NaN=미검출)
-    dif_pitch: np.ndarray           # dif 피치 시계열 (Hz, NaN=미검출)
-    mean_pitch_diff_hz: float       # 유효 프레임 기준 평균 피치 차이 (Hz)
-    ref_zcr: np.ndarray             # ref ZCR 시계열
-    dif_zcr: np.ndarray             # dif ZCR 시계열
+    ref_centroid: np.ndarray
+    dif_centroid: np.ndarray
+    ref_rolloff: np.ndarray
+    dif_rolloff: np.ndarray
+    ref_pitch: np.ndarray
+    dif_pitch: np.ndarray
+    mean_pitch_diff_hz: float
+    ref_zcr: np.ndarray
+    dif_zcr: np.ndarray
     ref_spectrogram: SpectrogramData
     dif_spectrogram: SpectrogramData
 
@@ -123,47 +144,42 @@ class SpectrumData:
 class MetricStatus:
     """지표 계산 상태."""
 
-    value: Optional[float]          # 계산된 값 (실패 시 None)
-    status: str                     # "success" | "N/A" | "failed"
-    reason: Optional[str] = None    # 실패 사유 (optional)
+    value: Optional[float]
+    status: str                 # "success" | "N/A" | "failed"
+    reason: Optional[str] = None
 
 
 @dataclass
 class AnalysisResult:
     """전체 분석 결과."""
 
-    # 입력 정보
     ref_path: str
     dif_path: str
-    analysis_timestamp: str     # ISO 8601
+    analysis_timestamp: str
     config: AnalysisConfig
 
-    # 신호 데이터 (시각화용)
     ref_audio: AudioData
-    dif_audio: AudioData        # 포맷 정규화 후
-    dif_aligned: np.ndarray     # 지연 보정 후 정렬된 dif 샘플
+    dif_audio: AudioData
+    dif_aligned: np.ndarray
 
-    # 지연 보정
     delay: DelayResult
 
-    # 묵음 구간
     ref_silence_segments: list[SilenceSegment]
     dif_silence_segments: list[SilenceSegment]
     false_silence_segments: list[SilenceSegment]
     silence_leakage_segments: list[SilenceSegment]
     silence_metrics: SilenceMetrics
 
-    # 음질 지표
-    snr_db: MetricStatus
-    pesq_score: MetricStatus
-    stoi_score: MetricStatus
-    rms_diff_db: MetricStatus
-    clipping_ratio: MetricStatus
-    ref_noise_floor_db: MetricStatus
-    dif_noise_floor_db: MetricStatus
+    # 이상 구간 (프레임별 correlation 기반)
+    anomaly_segments: list[AnomalySegment] = field(default_factory=list)
 
-    # 스펙트럼 분석
-    spectrum: Optional[SpectrumData]
+    snr_db: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    pesq_score: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    stoi_score: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    rms_diff_db: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    clipping_ratio: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    ref_noise_floor_db: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
+    dif_noise_floor_db: MetricStatus = field(default_factory=lambda: MetricStatus(None, "N/A"))
 
-    # 오류 로그
+    spectrum: Optional[SpectrumData] = None
     error_log: list[AnalysisMessage] = field(default_factory=list)

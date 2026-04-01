@@ -1,4 +1,4 @@
-"""Main analysis pipeline."""
+"""분석 파이프라인 Facade."""
 
 from dataclasses import dataclass
 import logging
@@ -26,11 +26,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AnalysisConfigV2(AnalysisConfig):
-    """Extended config for difference highlight overlays."""
-
-    residual_diff_threshold: float = 0.05
-    centroid_diff_threshold_hz: float = 300.0
-    rolloff_diff_threshold_hz: float = 500.0
+    """확장 config (하위 호환용)."""
+    pass
 
 
 def validate_config(config: AnalysisConfig) -> list[str]:
@@ -45,15 +42,6 @@ def validate_config(config: AnalysisConfig) -> list[str]:
         errors.append(f"min_silence_ms({config.min_silence_ms}) must be > 0.")
     if config.silence_merge_ms < 0:
         errors.append(f"silence_merge_ms({config.silence_merge_ms}) must be >= 0.")
-    residual_thr = float(getattr(config, "residual_diff_threshold", 0.05))
-    centroid_thr = float(getattr(config, "centroid_diff_threshold_hz", 300.0))
-    rolloff_thr = float(getattr(config, "rolloff_diff_threshold_hz", 500.0))
-    if residual_thr <= 0:
-        errors.append(f"residual_diff_threshold({residual_thr}) must be > 0.")
-    if centroid_thr <= 0:
-        errors.append(f"centroid_diff_threshold_hz({centroid_thr}) must be > 0.")
-    if rolloff_thr <= 0:
-        errors.append(f"rolloff_diff_threshold_hz({rolloff_thr}) must be > 0.")
     return errors
 
 
@@ -73,8 +61,7 @@ def run_analysis(
     def _warn(msg: str) -> None:
         error_log.append(
             AnalysisMessage(
-                level="warn",
-                message=msg,
+                level="warn", message=msg,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
         )
@@ -138,12 +125,15 @@ def run_analysis(
     ref_silence = vad_mod.detect_silence(ref_frames, sr, config)
     dif_silence = vad_mod.detect_silence(dif_frames, sr, config)
 
-    _progress(45, "Computing silence metrics")
+    _progress(45, "Detecting anomalies (frame-level correlation)")
     silence_metrics, false_silence_segs, leakage_segs = silence_mod.compute_silence_metrics(
         ref_frames, dif_frames, ref_silence, dif_silence, sr, config,
         dif_audio=dif_common,
         ref_audio=ref_common,
     )
+
+    # 상세 이상 구간 (AnomalySegment 포함)
+    anomaly_segments = silence_mod.detect_anomalies(ref_common, dif_common, sr, config)
 
     _progress(55, "Computing quality metrics")
     snr_db = _metric_safe(metrics_mod.compute_snr, ref_common, dif_common)
@@ -176,6 +166,7 @@ def run_analysis(
         false_silence_segments=false_silence_segs,
         silence_leakage_segments=leakage_segs,
         silence_metrics=silence_metrics,
+        anomaly_segments=anomaly_segments,
         snr_db=snr_db,
         pesq_score=pesq_score,
         stoi_score=stoi_score,

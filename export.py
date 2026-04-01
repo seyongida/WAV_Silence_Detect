@@ -54,11 +54,6 @@ def save_json(result: AnalysisResult, path: str) -> None:
             "min_silence_ms": result.config.min_silence_ms,
             "silence_merge_ms": result.config.silence_merge_ms,
         }
-    # AnalysisConfigV2 추가 필드 포함
-    for attr in ("residual_diff_threshold", "centroid_diff_threshold_hz", "rolloff_diff_threshold_hz"):
-        val = getattr(result.config, attr, None)
-        if val is not None:
-            config_data[attr] = val
 
     data = {
         "ref_path": result.ref_path,
@@ -84,6 +79,14 @@ def save_json(result: AnalysisResult, path: str) -> None:
             "dif_silence_count": result.silence_metrics.dif_silence_count,
             "dif_total_silence_ms": result.silence_metrics.dif_total_silence_ms,
         },
+        "anomaly_segments": [
+            {
+                "start_ms": s.start_ms, "end_ms": s.end_ms,
+                "duration_ms": s.duration_ms, "type": s.anomaly_type,
+                "mean_gain_db": s.mean_gain_db,
+            }
+            for s in getattr(result, "anomaly_segments", [])
+        ],
         "ref_silence_segments": _seg_list(result.ref_silence_segments),
         "dif_silence_segments": _seg_list(result.dif_silence_segments),
         "false_silence_segments": _seg_list(result.false_silence_segments),
@@ -188,24 +191,36 @@ def _build_result_html(result: AnalysisResult, figures: list, label: str) -> str
     sm = result.silence_metrics
     d = result.delay
 
+    # anomaly 집계
+    anomalies = getattr(result, "anomaly_segments", [])
+    n_zero = sum(1 for s in anomalies if s.anomaly_type == "digital_zero")
+    n_gain = sum(1 for s in anomalies if s.anomaly_type == "gain_drop")
+
     # 요약 통계
     stats = f"""
     <div class="stats-row">
-      <div class="stat-card"><div class="stat-val err">{sm.dif_silence_count}</div><div class="stat-lbl">dif-only 묵음 수</div></div>
-      <div class="stat-card"><div class="stat-val warn">{sm.dif_total_silence_ms:.0f}</div><div class="stat-lbl">dif-only 묵음 (ms)</div></div>
-      <div class="stat-card"><div class="stat-val p1">{sm.silence_leakage:.3f}</div><div class="stat-lbl">Silence Leakage</div></div>
-      <div class="stat-card"><div class="stat-val p2">{sm.false_silence:.3f}</div><div class="stat-lbl">False Silence</div></div>
+      <div class="stat-card"><div class="stat-val err">{sm.dif_silence_count}</div><div class="stat-lbl">dif-only 음성 깨짐 수</div></div>
+      <div class="stat-card"><div class="stat-val warn">{sm.dif_total_silence_ms:.0f}</div><div class="stat-lbl">dif-only 깨짐 (ms)</div></div>
     </div>"""
 
-    # dif-only 묵음 이벤트 테이블
+    # dif-only 이벤트 테이블
+    events = []
+    for seg in anomalies:
+        lbl = "묵음" if seg.anomaly_type == "digital_zero" else "깨짐"
+        events.append((lbl, seg.duration_ms, seg.start_ms, seg.end_ms))
+    if not events:
+        for seg in result.false_silence_segments:
+            events.append(("묵음", seg.duration_ms, seg.start_ms, seg.end_ms))
+    events.sort(key=lambda x: x[2])
+
     seg_rows = ""
-    for i, seg in enumerate(result.false_silence_segments):
-        seg_rows += f"<tr><td>{i+1}</td><td>{seg.duration_ms:.1f}</td><td>{seg.start_ms/1000:.3f}</td><td>{seg.end_ms/1000:.3f}</td></tr>\n"
+    for i, (lbl, dur, start, end) in enumerate(events):
+        seg_rows += f"<tr><td>{i+1}</td><td>{lbl}</td><td>{dur:.1f}</td><td>{start/1000:.3f}</td><td>{end/1000:.3f}</td></tr>\n"
     seg_table = f"""
     <div class="card">
-      <h3>dif-only 묵음 이벤트</h3>
-      <table><thead><tr><th>#</th><th>길이 (ms)</th><th>시작 (s)</th><th>종료 (s)</th></tr></thead>
-      <tbody>{seg_rows if seg_rows else '<tr><td colspan="4">없음</td></tr>'}</tbody></table>
+      <h3>dif-only 이벤트</h3>
+      <table><thead><tr><th>#</th><th>구분</th><th>길이 (ms)</th><th>시작 (s)</th><th>종료 (s)</th></tr></thead>
+      <tbody>{seg_rows if seg_rows else '<tr><td colspan="5">없음</td></tr>'}</tbody></table>
     </div>"""
 
     # 분석 지표 요약
@@ -213,14 +228,17 @@ def _build_result_html(result: AnalysisResult, figures: list, label: str) -> str
     <div class="card">
       <h3>분석 지표</h3>
       <p><b>Delay:</b> {d.applied_delay_ms:.1f} ms (coarse: {d.coarse_delay_ms:.1f}, refined: {d.refined_delay_ms:.1f}, DTW: {d.dtw_used})</p>
+      <p><b>이상 검출:</b> 묵음 {n_zero}건, 깨짐 {n_gain}건</p>
       <p><b>SNR:</b> {_metric_val(result.snr_db)} dB &nbsp; <b>PESQ:</b> {_metric_val(result.pesq_score)} &nbsp; <b>STOI:</b> {_metric_val(result.stoi_score)}</p>
       <p><b>RMS diff:</b> {_metric_val(result.rms_diff_db)} dB &nbsp; <b>Clipping:</b> {_metric_val(result.clipping_ratio)}</p>
       <p><b>ref NF:</b> {_metric_val(result.ref_noise_floor_db)} dB &nbsp; <b>dif NF:</b> {_metric_val(result.dif_noise_floor_db)} dB</p>
-      <p><b>Leakage:</b> {sm.silence_leakage:.4f} &nbsp; <b>False Silence:</b> {sm.false_silence:.4f}</p>
     </div>"""
 
     # 상세 지표 테이블
     metric_rows_data = [
+        ("이상 검출 (묵음)", str(n_zero), "0 = 정상", "dif에서 디지털 제로 구간 수"),
+        ("이상 검출 (깨짐)", str(n_gain), "0 = 정상", "dif에서 gain 변조 구간 수"),
+        ("이상 총 시간 (ms)", f"{sm.dif_total_silence_ms:.0f}", "0 = 정상", "이상 구간 총 지속 시간"),
         ("SNR (dB)", _metric_val(result.snr_db), "&gt;20 good, &gt;30 very good", "높을수록 좋음"),
         ("PESQ", _metric_val(result.pesq_score), "1.0 ~ 4.5", "높을수록 음질 좋음"),
         ("STOI", _metric_val(result.stoi_score), "0.0 ~ 1.0", "높을수록 명료도 좋음"),
@@ -228,8 +246,6 @@ def _build_result_html(result: AnalysisResult, figures: list, label: str) -> str
         ("Clipping", _metric_val(result.clipping_ratio), "0.0 ~ 1.0", "0에 가까울수록 좋음"),
         ("ref NF (dB)", _metric_val(result.ref_noise_floor_db), "-100 ~ -20", "낮을수록 조용"),
         ("dif NF (dB)", _metric_val(result.dif_noise_floor_db), "-100 ~ -20", "ref와 비교"),
-        ("Silence Leakage", f"{sm.silence_leakage:.4f}", "0.0 ~ 1.0", "ref 묵음이 dif에서 깨진 비율"),
-        ("False Silence", f"{sm.false_silence:.4f}", "0.0 ~ 1.0", "ref 비묵음이 dif에서 묵음된 비율"),
     ]
     m_rows = ""
     for name, val, ref_range, desc in metric_rows_data:
