@@ -1,5 +1,54 @@
 # Changelog
 
+## [3.4.3] - 2026-04-02
+
+### README 이상 검출 로직 상세 문서 추가
+- 기술 버전: 8단계 파이프라인으로 분해하여 조건식, 계산식, 파라미터 테이블 포함
+- 쉬운 설명 버전: 전화 통화·TV 볼륨 등 비유를 활용하여 신호 처리 비전문가도 이해 가능하도록 작성
+
+## [3.4.2] - 2026-04-02
+
+### 문서 동기화
+- `audio_anomaly_detector.py` — 하드코딩 값 9개를 kwargs 파라미터로 전환, 직전 dif 활성도 검사(`_has_prior_activity`) 추가, docstring에 파라미터 목록 및 튜닝 예시 추가
+- `README.md` — 이상 검출 알고리즘 설명을 파라미터 기반으로 갱신, 단일 스크립트 섹션에 파라미터 튜닝 예시 추가
+- `.kiro/steering/product.md` — 이상 검출 알고리즘 파라미터화 반영, 직전 dif 활성도 검사 추가, 단일 스크립트 배포 기능 추가
+- `.kiro/steering/structure.md` — `audio_anomaly_detector.py`/`sample_usage.py` 추가, 회귀 테스트 5 Pair로 갱신, AnalysisConfig 필드 상세화, 이상 검출 흐름에 전환 구간 오탐 제외 단계 추가
+- `.kiro/steering/tech.md` — 이상 검출 임계값 하드코딩 금지 규칙, 단일 스크립트 동기화 규칙 추가
+- `.kiro/specs/design.md` — AnalysisConfig 필드 갱신, detect_anomalies docstring 갱신, ParamPanel을 VAD/이상 검출 2그룹 구조로 갱신
+
+## [3.4.1] - 2026-04-02
+
+### audio_anomaly_detector.py 동기화 및 README 업데이트
+- `_detect_anomalies()` 내부 하드코딩 값 9개를 kwargs 파라미터로 전환 (GUI 프로젝트의 AnalysisConfig와 동일한 기본값)
+- 직전 dif 활성도 검사(`_has_prior_activity`) 로직 추가하여 자연 묵음→음성 전환 구간 오탐 방지
+- `detect_dif_only_events()` 공개 API에 keyword-only 파라미터 9개 추가 (하위 호환 유지)
+- docstring에 조정 가능한 파라미터 목록 및 튜닝 예시 추가
+- `README.md` 이상 검출 알고리즘 섹션을 파라미터 기반 설명으로 갱신, 단일 스크립트 섹션에 파라미터 튜닝 예시 추가
+
+## [3.4.0] - 2026-04-02
+
+### AnalysisConfig 정리 및 하드코딩 파라미터화
+- 미사용 파라미터 11개 삭제: `silence_boundary_margin_ms`, `dif_only_energy_threshold_db`, `noise_loss_peak_threshold`, `noise_loss_ref_energy_db`, `digital_zero_peak_threshold`, `digital_zero_ref_energy_db`, `energy_drop_db`, `digital_zero_threshold`, `gain_drop_db`, `anomaly_merge_ms` 및 기존 미사용 필드
+- `detect_anomalies()` 내부 하드코딩 값 9개를 Config 파라미터로 전환:
+  - `speech_strong_rms` (0.03): 확실한 음성 구간 판정 RMS 임계값
+  - `zero_peak_threshold` (0.0005): dif 디지털 제로 판정 peak 임계값
+  - `gain_drop_ratio` (0.4): 깨짐 Type A 주변 대비 ratio 임계값
+  - `gain_drop_ratio_strict` (0.35): 깨짐 Type B ratio 임계값
+  - `gain_drop_min_corr` (0.3): 깨짐 Type A 최소 correlation
+  - `prior_activity_threshold` (0.01): 직전 dif 활성 판정 peak (전환 구간 오탐 제외)
+  - `min_anomaly_ms` (50): 묵음/깨짐 A 최소 지속 시간
+  - `min_anomaly_b_ms` (120): 깨짐 B 최소 지속 시간
+  - `anomaly_gap_frames` (3): 깨짐 B gap 허용 프레임 수
+
+### GUI 파라미터 패널 재구성
+- "VAD / 묵음 검출"과 "이상 검출 (묵음/깨짐)" 2개 그룹으로 분리
+- 각 파라미터에 한글 설명 라벨 추가
+- 미사용 파라미터 위젯 제거 (Boundary margin, Energy thr, Gain drop dB)
+- 새 이상 검출 파라미터 위젯 9개 추가
+
+### export 업데이트
+- JSON 내보내기에 새 이상 검출 파라미터 포함
+
 ## [3.3.1] - 2026-04-01
 
 ### .gitignore 정리 및 IDE 설정 tracked 제거

@@ -53,6 +53,15 @@ def save_json(result: AnalysisResult, path: str) -> None:
             "zcr_threshold": result.config.zcr_threshold,
             "min_silence_ms": result.config.min_silence_ms,
             "silence_merge_ms": result.config.silence_merge_ms,
+            "speech_strong_rms": result.config.speech_strong_rms,
+            "zero_peak_threshold": result.config.zero_peak_threshold,
+            "gain_drop_ratio": result.config.gain_drop_ratio,
+            "gain_drop_ratio_strict": result.config.gain_drop_ratio_strict,
+            "gain_drop_min_corr": result.config.gain_drop_min_corr,
+            "prior_activity_threshold": result.config.prior_activity_threshold,
+            "min_anomaly_ms": result.config.min_anomaly_ms,
+            "min_anomaly_b_ms": result.config.min_anomaly_b_ms,
+            "anomaly_gap_frames": result.config.anomaly_gap_frames,
         }
 
     data = {

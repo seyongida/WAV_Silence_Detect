@@ -14,7 +14,7 @@ GUI, 스펙트럼 분석, 내보내기 등 부가 기능은 포함하지 않습�
   - soundfile
 
 ■ 핵심 함수
-  detect_dif_only_events(ref_path, dif_path) -> list[dict]
+  detect_dif_only_events(ref_path, dif_path, **kwargs) -> list[dict]
 
 ■ 사용 예시
   from audio_anomaly_detector import detect_dif_only_events
@@ -30,6 +30,13 @@ GUI, 스펙트럼 분석, 내보내기 등 부가 기능은 포함하지 않습�
   events = detect_dif_only_events("ref.wav", "normal_dif.wav")
   # []
 
+■ 파라미터 튜닝 예시
+  events = detect_dif_only_events("ref.wav", "dif.wav",
+      speech_strong_rms=0.05,     # 음성 판정 RMS 임계값 (기본 0.03)
+      zero_peak_threshold=0.001,  # 묵음 판정 peak 임계값 (기본 0.0005)
+      min_anomaly_ms=80,          # 최소 이상 지속 시간 (기본 50ms)
+  )
+
 ■ 반환값 dict 필드 설명
   - index       : 이벤트 번호 (1부터 시작)
   - type        : "묵음" 또는 "깨짐"
@@ -39,15 +46,27 @@ GUI, 스펙트럼 분석, 내보내기 등 부가 기능은 포함하지 않습�
   - gain_db     : 구간 평균 gain (dB). 묵음은 -100.0
   - correlation : 구간 평균 Pearson correlation
 
+■ 조정 가능한 파라미터 (kwargs)
+  - speech_strong_rms      (float, 0.03)  : ref 확실한 음성 판정 RMS 임계값
+  - zero_peak_threshold    (float, 0.0005): dif 디지털 제로 판정 peak 임계값
+  - gain_drop_ratio        (float, 0.4)   : 깨짐 A 주변 대비 ratio 임계값
+  - gain_drop_ratio_strict (float, 0.35)  : 깨짐 B ratio 임계값 (더 엄격)
+  - gain_drop_min_corr     (float, 0.3)   : 깨짐 A 최소 correlation
+  - prior_activity_threshold (float, 0.01): 직전 dif 활성 판정 peak 임계값
+  - min_anomaly_ms         (int, 50)      : 묵음/깨짐 A 최소 지속 시간 (ms)
+  - min_anomaly_b_ms       (int, 120)     : 깨짐 B 최소 지속 시간 (ms)
+  - anomaly_gap_frames     (int, 3)       : 깨짐 B gap 허용 프레임 수
+
 ■ 알고리즘 요약
   1. WAV 로드 → float32 정규화 → 리샘플링(dif를 ref SR에 맞춤)
   2. Cross-correlation 기반 지연 추정 → DTW 세부 보정 → 정렬
   3. 프레임별 RMS/peak/correlation 계산 (20ms 프레임, 10ms 홉)
   4. 주변 1초 구간의 ratio 중앙값 대비 급격한 하락 검출
-     - 묵음: dif_peak ≈ 0 + ref 음성 구간, 최소 50ms
-     - 깨짐 Type A: ratio < context_med*0.4 + corr > 0.3, 최소 50ms
-     - 깨짐 Type B: ratio < context_med*0.35 + 120ms 이상 지속
-  5. 묵음 직후 200ms 이내의 distortion은 복구 과정으로 제외
+     - 묵음: dif_peak < zero_peak_threshold + ref 음성 구간, 최소 min_anomaly_ms
+     - 깨짐 A: ratio < context_med * gain_drop_ratio + corr > gain_drop_min_corr
+     - 깨짐 B: ratio < context_med * gain_drop_ratio_strict + min_anomaly_b_ms 이상
+  5. 직전 200ms에서 dif 활성 신호가 없었던 자연 전환 구간 제외
+  6. 묵음 직후 200ms 이내의 distortion은 복구 과정으로 제외
 """
 
 from __future__ import annotations
@@ -201,6 +220,15 @@ def _align_signals(ref: np.ndarray, dif: np.ndarray, sr: int) -> np.ndarray:
 def _detect_anomalies(
     ref: np.ndarray, dif: np.ndarray, sr: int,
     frame_ms: int = 20, hop_ms: int = 10,
+    speech_strong_rms: float = 0.03,
+    zero_peak_threshold: float = 0.0005,
+    gain_drop_ratio: float = 0.4,
+    gain_drop_ratio_strict: float = 0.35,
+    gain_drop_min_corr: float = 0.3,
+    prior_activity_threshold: float = 0.01,
+    min_anomaly_ms: int = 50,
+    min_anomaly_b_ms: int = 120,
+    anomaly_gap_frames: int = 3,
 ) -> list[_AnomalySegment]:
     """주변 대비 ratio 급변 + correlation 기반 이상 구간 검출."""
     frame_len = int(sr * frame_ms / 1000)
@@ -252,22 +280,31 @@ def _detect_anomalies(
             if len(vals) > 5:
                 ctx_med[i] = np.median(vals)
 
-    strong = ref_rms > 0.03
+    strong = ref_rms > speech_strong_rms
     not_zero = dif_peak >= 0.001
+    min_frames = max(1, min_anomaly_ms // hop_ms)
+    min_frames_b = max(1, min_anomaly_b_ms // hop_ms)
 
     # 묵음 검출
-    zero_mask = strong & (dif_peak < 0.0005)
-    sil_segs = _find_segs(zero_mask, hop_ms, 5)
+    zero_mask = strong & (dif_peak < zero_peak_threshold)
+    sil_segs = _find_segs(zero_mask, hop_ms, min_frames)
+
+    # 자연 묵음→음성 전환 구간 오탐 제외
+    pre_check = int(200 / hop_ms)
+    sil_segs = [
+        seg for seg in sil_segs
+        if _has_prior_activity(seg[0], hop_ms, pre_check, dif_peak, prior_activity_threshold)
+    ]
 
     # 깨짐 Type A: ratio 급락 + correlation 높음
-    drop_a = ratio < ctx_med * 0.4
-    mask_a = strong & drop_a & not_zero & (corr > 0.3)
-    segs_a = _find_segs(mask_a, hop_ms, 5)
+    drop_a = ratio < ctx_med * gain_drop_ratio
+    mask_a = strong & drop_a & not_zero & (corr > gain_drop_min_corr)
+    segs_a = _find_segs(mask_a, hop_ms, min_frames)
 
-    # 깨짐 Type B: 더 엄격한 ratio + 120ms+ 지속
-    drop_b = ratio < ctx_med * 0.35
+    # 깨짐 Type B: 더 엄격한 ratio + 장시간 지속
+    drop_b = ratio < ctx_med * gain_drop_ratio_strict
     mask_b = strong & drop_b & not_zero & ~mask_a
-    segs_b = _find_segs_gap(mask_b, hop_ms, 12, 3)
+    segs_b = _find_segs_gap(mask_b, hop_ms, min_frames_b, anomaly_gap_frames)
 
     # 묵음 직후 200ms 이내 distortion 제외
     sil_ends = [em for _, em, _ in sil_segs]
@@ -331,11 +368,34 @@ def _find_segs_gap(mask: np.ndarray, hop_ms: int, min_f: int, max_gap: int) -> l
     return segs
 
 
+def _has_prior_activity(
+    seg_start_ms: int, hop_ms: int,
+    pre_check_frames: int, dif_peak: np.ndarray,
+    threshold: float = 0.01,
+) -> bool:
+    """묵음 구간 직전에 dif 활성 신호가 있었는지 확인."""
+    seg_start_frame = int(seg_start_ms / hop_ms)
+    pre_start = max(0, seg_start_frame - pre_check_frames)
+    if pre_start >= seg_start_frame:
+        return True
+    return float(np.max(dif_peak[pre_start:seg_start_frame])) >= threshold
+
+
 # ─── 공개 API ─────────────────────────────────────────────────────────────────
 
 def detect_dif_only_events(
     ref_path: str,
     dif_path: str,
+    *,
+    speech_strong_rms: float = 0.03,
+    zero_peak_threshold: float = 0.0005,
+    gain_drop_ratio: float = 0.4,
+    gain_drop_ratio_strict: float = 0.35,
+    gain_drop_min_corr: float = 0.3,
+    prior_activity_threshold: float = 0.01,
+    min_anomaly_ms: int = 50,
+    min_anomaly_b_ms: int = 120,
+    anomaly_gap_frames: int = 3,
 ) -> list[dict]:
     """ref(원본)와 dif(수신본) WAV 파일을 비교하여 dif-only 이상 이벤트를 반환한다.
 
@@ -345,6 +405,15 @@ def detect_dif_only_events(
     매개변수:
         ref_path (str): 기준 WAV 파일 경로 (원본 전송음)
         dif_path (str): 비교 WAV 파일 경로 (수신 녹음본)
+        speech_strong_rms (float): ref 확실한 음성 판정 RMS 임계값 (기본 0.03)
+        zero_peak_threshold (float): dif 디지털 제로 판정 peak 임계값 (기본 0.0005)
+        gain_drop_ratio (float): 깨짐 A 주변 대비 ratio 임계값 (기본 0.4)
+        gain_drop_ratio_strict (float): 깨짐 B ratio 임계값 (기본 0.35)
+        gain_drop_min_corr (float): 깨짐 A 최소 correlation (기본 0.3)
+        prior_activity_threshold (float): 직전 dif 활성 판정 peak 임계값 (기본 0.01)
+        min_anomaly_ms (int): 묵음/깨짐 A 최소 지속 시간 ms (기본 50)
+        min_anomaly_b_ms (int): 깨짐 B 최소 지속 시간 ms (기본 120)
+        anomaly_gap_frames (int): 깨짐 B gap 허용 프레임 수 (기본 3)
 
     반환값:
         list[dict]: 이상 이벤트 리스트. 각 dict는 다음 필드를 포함:
@@ -388,7 +457,18 @@ def detect_dif_only_events(
     dif_common = dif_aligned[:n]
 
     # 5. 이상 검출
-    anomalies = _detect_anomalies(ref_common, dif_common, sr)
+    anomalies = _detect_anomalies(
+        ref_common, dif_common, sr,
+        speech_strong_rms=speech_strong_rms,
+        zero_peak_threshold=zero_peak_threshold,
+        gain_drop_ratio=gain_drop_ratio,
+        gain_drop_ratio_strict=gain_drop_ratio_strict,
+        gain_drop_min_corr=gain_drop_min_corr,
+        prior_activity_threshold=prior_activity_threshold,
+        min_anomaly_ms=min_anomaly_ms,
+        min_anomaly_b_ms=min_anomaly_b_ms,
+        anomaly_gap_frames=anomaly_gap_frames,
+    )
 
     # 6. dict 리스트로 변환
     events: list[dict] = []

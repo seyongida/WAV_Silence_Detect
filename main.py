@@ -507,26 +507,41 @@ class ParamPanel(QWidget):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
 
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background-color: {Colors.CARD};
+        spin_style = f"""
+            QSpinBox, QDoubleSpinBox {{
+                background-color: {Colors.SURFACE};
+                color: {Colors.TEXT};
                 border: 1px solid {Colors.BORDER};
-                border-radius: 10px;
+                border-radius: 4px;
+                padding: 2px 4px;
             }}
-        """)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(16, 12, 16, 14)
+        """
+        tip_style = f"color: {Colors.TEXT_DIM}; font-size: 10px; border: none; padding: 0px;"
+        lbl_style = f"color: {Colors.TEXT}; font-size: 12px; font-weight: 500; border: none;"
 
-        title = QLabel("분석 파라미터")
-        title.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {Colors.TEXT}; border: none;")
-        card_layout.addWidget(title)
-
-        grid = QGridLayout()
-        grid.setSpacing(8)
-
-        lbl_style = f"color: {Colors.TEXT_DIM}; font-size: 12px; border: none;"
+        def _make_group(title: str) -> tuple[QFrame, QGridLayout]:
+            card = QFrame()
+            card.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {Colors.CARD};
+                    border: 1px solid {Colors.BORDER};
+                    border-radius: 8px;
+                }}
+            """)
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(14, 10, 14, 12)
+            cl.setSpacing(6)
+            t = QLabel(title)
+            t.setStyleSheet(f"font-size: 13px; font-weight: 700; color: {Colors.ACCENT}; border: none;")
+            cl.addWidget(t)
+            g = QGridLayout()
+            g.setSpacing(4)
+            g.setColumnStretch(1, 1)
+            g.setColumnStretch(3, 1)
+            cl.addLayout(g)
+            return card, g
 
         def _label(text):
             l = QLabel(text)
@@ -534,42 +549,85 @@ class ParamPanel(QWidget):
             l.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             return l
 
+        def _tip(text):
+            l = QLabel(text)
+            l.setStyleSheet(tip_style)
+            l.setWordWrap(True)
+            return l
+
+        def _add_param(grid, row, col, label_text, widget, tip_text):
+            """파라미터 1개를 그리드에 추가 (라벨 + 위젯 + 설명)."""
+            c = col * 3
+            grid.addWidget(_label(label_text), row * 2, c, 1, 1)
+            widget.setStyleSheet(spin_style)
+            widget.setFixedWidth(80)
+            grid.addWidget(widget, row * 2, c + 1, 1, 1)
+            grid.addWidget(_tip(tip_text), row * 2 + 1, c, 1, 2)
+
+        # ── VAD / 묵음 검출 그룹 ──
+        vad_card, vad_grid = _make_group("🔇 VAD / 묵음 검출")
+
         self._frame_ms = QSpinBox(); self._frame_ms.setRange(5, 100); self._frame_ms.setValue(20)
         self._hop_ms = QSpinBox(); self._hop_ms.setRange(1, 100); self._hop_ms.setValue(10)
         self._noise_floor = QDoubleSpinBox(); self._noise_floor.setRange(0, 100); self._noise_floor.setValue(15)
         self._energy_margin = QDoubleSpinBox(); self._energy_margin.setRange(0, 50); self._energy_margin.setValue(10)
         self._vad_aggressiveness = QSpinBox(); self._vad_aggressiveness.setRange(0, 3); self._vad_aggressiveness.setValue(2)
         self._zcr_threshold = QDoubleSpinBox(); self._zcr_threshold.setRange(0, 1); self._zcr_threshold.setDecimals(3); self._zcr_threshold.setSingleStep(0.01); self._zcr_threshold.setValue(0.1)
-        self._min_silence_ms = QSpinBox(); self._min_silence_ms.setRange(1, 2000); self._min_silence_ms.setValue(100)
+        self._min_silence_ms = QSpinBox(); self._min_silence_ms.setRange(1, 2000); self._min_silence_ms.setValue(200)
         self._silence_merge_ms = QSpinBox(); self._silence_merge_ms.setRange(0, 1000); self._silence_merge_ms.setValue(50)
-        self._boundary_margin_ms = QSpinBox(); self._boundary_margin_ms.setRange(0, 500); self._boundary_margin_ms.setValue(100)
-        self._energy_thr_db = QDoubleSpinBox(); self._energy_thr_db.setRange(-100, 0); self._energy_thr_db.setDecimals(1); self._energy_thr_db.setSingleStep(1.0); self._energy_thr_db.setValue(-40.0)
-        self._gain_drop_db = QDoubleSpinBox(); self._gain_drop_db.setRange(5, 60); self._gain_drop_db.setDecimals(1); self._gain_drop_db.setSingleStep(1.0); self._gain_drop_db.setValue(10.0)
+
+        _add_param(vad_grid, 0, 0, "Frame (ms)", self._frame_ms,
+                   "분석 프레임 길이")
+        _add_param(vad_grid, 0, 1, "Hop (ms)", self._hop_ms,
+                   "프레임 이동 간격")
+        _add_param(vad_grid, 1, 0, "Noise floor %", self._noise_floor,
+                   "에너지 하위 백분위수로 잡음 바닥 추정")
+        _add_param(vad_grid, 1, 1, "Energy margin (dB)", self._energy_margin,
+                   "잡음 바닥 위 묵음 판정 마진")
+        _add_param(vad_grid, 2, 0, "VAD aggressiveness", self._vad_aggressiveness,
+                   "WebRTC VAD 민감도 (0=관대, 3=엄격)")
+        _add_param(vad_grid, 2, 1, "ZCR threshold", self._zcr_threshold,
+                   "영교차율 묵음 판정 임계값")
+        _add_param(vad_grid, 3, 0, "Min silence (ms)", self._min_silence_ms,
+                   "이보다 짧은 묵음 구간 무시")
+        _add_param(vad_grid, 3, 1, "Silence merge (ms)", self._silence_merge_ms,
+                   "이보다 가까운 묵음 구간 병합")
+
+        layout.addWidget(vad_card)
+
+        # ── 이상 검출 그룹 ──
+        anomaly_card, anomaly_grid = _make_group("⚡ 이상 검출 (묵음/깨짐)")
+
+        self._speech_strong_rms = QDoubleSpinBox(); self._speech_strong_rms.setRange(0.001, 0.5); self._speech_strong_rms.setDecimals(3); self._speech_strong_rms.setSingleStep(0.005); self._speech_strong_rms.setValue(0.03)
+        self._zero_peak_threshold = QDoubleSpinBox(); self._zero_peak_threshold.setRange(0.0001, 0.01); self._zero_peak_threshold.setDecimals(4); self._zero_peak_threshold.setSingleStep(0.0001); self._zero_peak_threshold.setValue(0.0005)
+        self._gain_drop_ratio = QDoubleSpinBox(); self._gain_drop_ratio.setRange(0.1, 0.9); self._gain_drop_ratio.setDecimals(2); self._gain_drop_ratio.setSingleStep(0.05); self._gain_drop_ratio.setValue(0.4)
+        self._gain_drop_ratio_strict = QDoubleSpinBox(); self._gain_drop_ratio_strict.setRange(0.1, 0.9); self._gain_drop_ratio_strict.setDecimals(2); self._gain_drop_ratio_strict.setSingleStep(0.05); self._gain_drop_ratio_strict.setValue(0.35)
+        self._gain_drop_min_corr = QDoubleSpinBox(); self._gain_drop_min_corr.setRange(0.0, 1.0); self._gain_drop_min_corr.setDecimals(2); self._gain_drop_min_corr.setSingleStep(0.05); self._gain_drop_min_corr.setValue(0.3)
+        self._prior_activity = QDoubleSpinBox(); self._prior_activity.setRange(0.001, 0.1); self._prior_activity.setDecimals(3); self._prior_activity.setSingleStep(0.005); self._prior_activity.setValue(0.01)
         self._min_anomaly_ms = QSpinBox(); self._min_anomaly_ms.setRange(10, 500); self._min_anomaly_ms.setValue(50)
+        self._min_anomaly_b_ms = QSpinBox(); self._min_anomaly_b_ms.setRange(10, 500); self._min_anomaly_b_ms.setValue(120)
+        self._anomaly_gap_frames = QSpinBox(); self._anomaly_gap_frames.setRange(0, 10); self._anomaly_gap_frames.setValue(3)
 
-        # 2컬럼 그리드 배치 (라벨, 입력 | 라벨, 입력)
-        params = [
-            ("Frame (ms)", self._frame_ms),
-            ("Hop (ms)", self._hop_ms),
-            ("Noise floor %", self._noise_floor),
-            ("Energy margin (dB)", self._energy_margin),
-            ("VAD aggressiveness", self._vad_aggressiveness),
-            ("ZCR threshold", self._zcr_threshold),
-            ("Min silence (ms)", self._min_silence_ms),
-            ("Silence merge (ms)", self._silence_merge_ms),
-            ("Boundary margin (ms)", self._boundary_margin_ms),
-            ("Energy thr (dB)", self._energy_thr_db),
-            ("Gain drop (dB)", self._gain_drop_db),
-            ("Min anomaly (ms)", self._min_anomaly_ms),
-        ]
-        for idx, (label_text, widget) in enumerate(params):
-            row = idx // 2
-            col = (idx % 2) * 2
-            grid.addWidget(_label(label_text), row, col)
-            grid.addWidget(widget, row, col + 1)
+        _add_param(anomaly_grid, 0, 0, "Speech RMS", self._speech_strong_rms,
+                   "ref 확실한 음성 판정 RMS 임계값")
+        _add_param(anomaly_grid, 0, 1, "Zero peak", self._zero_peak_threshold,
+                   "dif 디지털 제로 판정 peak 임계값")
+        _add_param(anomaly_grid, 1, 0, "Drop ratio A", self._gain_drop_ratio,
+                   "깨짐 A: 주변 대비 ratio 임계값")
+        _add_param(anomaly_grid, 1, 1, "Drop ratio B", self._gain_drop_ratio_strict,
+                   "깨짐 B: 더 엄격한 ratio 임계값")
+        _add_param(anomaly_grid, 2, 0, "Min corr A", self._gain_drop_min_corr,
+                   "깨짐 A: 최소 파형 상관계수")
+        _add_param(anomaly_grid, 2, 1, "Prior activity", self._prior_activity,
+                   "직전 dif 활성 판정 peak (전환 구간 오탐 제외)")
+        _add_param(anomaly_grid, 3, 0, "Min anomaly (ms)", self._min_anomaly_ms,
+                   "묵음/깨짐 A 최소 지속 시간")
+        _add_param(anomaly_grid, 3, 1, "Min anomaly B (ms)", self._min_anomaly_b_ms,
+                   "깨짐 B 최소 지속 시간")
+        _add_param(anomaly_grid, 4, 0, "Gap frames B", self._anomaly_gap_frames,
+                   "깨짐 B gap 허용 프레임 수")
 
-        card_layout.addLayout(grid)
-        layout.addWidget(card)
+        layout.addWidget(anomaly_card)
 
     def get_config(self):
         return analyzer_mod.AnalysisConfigV2(
@@ -581,10 +639,15 @@ class ParamPanel(QWidget):
             zcr_threshold=self._zcr_threshold.value(),
             min_silence_ms=self._min_silence_ms.value(),
             silence_merge_ms=self._silence_merge_ms.value(),
-            silence_boundary_margin_ms=self._boundary_margin_ms.value(),
-            dif_only_energy_threshold_db=self._energy_thr_db.value(),
-            gain_drop_db=self._gain_drop_db.value(),
+            speech_strong_rms=self._speech_strong_rms.value(),
+            zero_peak_threshold=self._zero_peak_threshold.value(),
+            gain_drop_ratio=self._gain_drop_ratio.value(),
+            gain_drop_ratio_strict=self._gain_drop_ratio_strict.value(),
+            gain_drop_min_corr=self._gain_drop_min_corr.value(),
+            prior_activity_threshold=self._prior_activity.value(),
             min_anomaly_ms=self._min_anomaly_ms.value(),
+            min_anomaly_b_ms=self._min_anomaly_b_ms.value(),
+            anomaly_gap_frames=self._anomaly_gap_frames.value(),
         )
 
     def validate(self) -> list[str]:

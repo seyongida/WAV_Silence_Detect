@@ -152,3 +152,47 @@ class TestComputeSilenceMetrics:
         assert metrics.dif_total_silence_ms > 0
         assert metrics.false_silence > 0
         assert len(false_segs) >= 1
+
+
+class TestPriorDifActivityFilter:
+    """자연 묵음→음성 전환 구간 오탐 제외 테스트."""
+
+    def test_transition_zone_excluded(self, config):
+        """직전에 ref/dif 모두 묵음이었다가 ref만 먼저 시작하는 구간은 제외."""
+        sr = 16000
+        n = int(sr * 2.0)
+        ref = np.zeros(n, dtype=np.float32)
+        dif = np.zeros(n, dtype=np.float32)
+
+        # 0~1초: ref/dif 모두 묵음
+        # 1.0초~: ref에 음성 시작, dif는 1.1초부터 시작 (100ms 지연)
+        t_speech = np.linspace(0, 0.9, int(sr * 0.9), dtype=np.float32)
+        speech = 0.3 * np.sin(2 * np.pi * 440 * t_speech)
+        ref_start = int(1.0 * sr)
+        ref[ref_start:ref_start + len(speech)] = speech
+        dif_start = int(1.1 * sr)
+        dif[dif_start:dif_start + len(speech)] = speech[:n - dif_start] if dif_start + len(speech) > n else speech
+
+        result = detect_anomalies(ref, dif, sr, config)
+        # 1.0~1.1초 구간이 digital_zero로 검출되면 안 됨
+        zero_segs = [a for a in result if a.anomaly_type == "digital_zero"]
+        assert len(zero_segs) == 0, f"전환 구간 오탐: {zero_segs}"
+
+    def test_real_silence_still_detected(self, config):
+        """직전에 dif 활성 신호가 있었던 진짜 묵음은 정상 검출."""
+        sr = 16000
+        n = int(sr * 2.0)
+        t = np.linspace(0, 2.0, n, dtype=np.float32)
+        ref = 0.3 * np.sin(2 * np.pi * 440 * t)
+        dif = ref.copy()
+
+        # 1.0~1.2초 구간을 디지털 제로로 (직전에 dif 활성 신호 있음)
+        zero_start = int(1.0 * sr)
+        zero_end = int(1.2 * sr)
+        dif[zero_start:zero_end] = 0.0
+
+        result = detect_anomalies(ref, dif, sr, config)
+        zero_segs = [a for a in result if a.anomaly_type == "digital_zero"]
+        assert len(zero_segs) >= 1, "진짜 묵음이 검출되어야 함"
+        assert zero_segs[0].start_ms >= 950
+        assert zero_segs[0].end_ms <= 1250

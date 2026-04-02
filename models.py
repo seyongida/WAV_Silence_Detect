@@ -20,22 +20,19 @@ class AnalysisConfig:
     zcr_threshold: float = 0.1          # ZCR 임계값
     min_silence_ms: int = 200           # 최소 묵음 지속 시간 (ms)
     silence_merge_ms: int = 50          # 묵음 병합 간격 (ms)
-    silence_boundary_margin_ms: int = 100   # 묵음 경계 확장 마진 (ms)
-    dif_only_energy_threshold_db: float = -40.0
-    noise_loss_peak_threshold: float = 0.002
-    noise_loss_ref_energy_db: float = -25.0
-    digital_zero_peak_threshold: float = 0.002
-    digital_zero_ref_energy_db: float = -30.0
-    energy_drop_db: float = 20.0
-
     # 프레임별 이상 검출 파라미터
-    anomaly_frame_ms: int = 20          # 이상 검출 프레임 길이 (ms)
-    anomaly_hop_ms: int = 10            # 이상 검출 홉 길이 (ms)
-    ref_silence_rms: float = 0.005      # ref 묵음 판정 RMS 임계값
-    digital_zero_threshold: float = 1e-6  # 디지털 제로 판정 임계값
-    gain_drop_db: float = 10.0          # gain 변조 판정 임계값 (dB)
-    min_anomaly_ms: int = 50            # 최소 이상 구간 지속 시간 (ms)
-    anomaly_merge_ms: int = 20          # 이상 구간 병합 간격 (ms)
+    anomaly_frame_ms: int = 20              # 이상 검출 프레임 길이 (ms)
+    anomaly_hop_ms: int = 10                # 이상 검출 홉 길이 (ms)
+    ref_silence_rms: float = 0.005          # ref 묵음 판정 RMS 임계값
+    speech_strong_rms: float = 0.03         # 확실한 음성 구간 판정 RMS 임계값
+    zero_peak_threshold: float = 0.0005     # dif 디지털 제로 판정 peak 임계값
+    gain_drop_ratio: float = 0.4            # 깨짐 Type A ratio 임계값 (context_med 대비)
+    gain_drop_ratio_strict: float = 0.35    # 깨짐 Type B ratio 임계값 (더 엄격)
+    gain_drop_min_corr: float = 0.3         # 깨짐 Type A 최소 correlation
+    prior_activity_threshold: float = 0.01  # 직전 dif 활성 판정 peak 임계값
+    min_anomaly_ms: int = 50                # 묵음/깨짐 Type A 최소 지속 시간 (ms)
+    min_anomaly_b_ms: int = 120             # 깨짐 Type B 최소 지속 시간 (ms)
+    anomaly_gap_frames: int = 3             # 깨짐 Type B gap 허용 프레임 수
 
 
 @dataclass

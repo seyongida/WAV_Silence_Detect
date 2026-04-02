@@ -110,21 +110,33 @@ def detect_anomalies(
     context_med = _compute_context_median(ratio, speech, hop_ms, n_frames)
 
     # 묵음 검출
-    speech_strong = ref_rms > 0.03
-    zero_mask = speech_strong & (dif_peak < 0.0005)
-    silence_segs = _find_segments(zero_mask, hop_ms, min_frames=5)
+    speech_strong = ref_rms > config.speech_strong_rms
+    zero_mask = speech_strong & (dif_peak < config.zero_peak_threshold)
+    min_frames = max(1, config.min_anomaly_ms // hop_ms)
+    silence_segs = _find_segments(zero_mask, hop_ms, min_frames=min_frames)
+
+    # 자연 묵음→음성 전환 구간 오탐 제외:
+    # 직전 200ms에서 dif_peak max가 낮으면 dif도 묵음이었던 것이므로 제외
+    pre_check_frames = int(200 / hop_ms)
+    silence_segs = [
+        seg for seg in silence_segs
+        if _has_prior_dif_activity(seg[0], hop_ms, pre_check_frames, dif_peak,
+                                   config.prior_activity_threshold)
+    ]
 
     # 깨짐 Type A: ratio 급락 + correlation 높음
-    ratio_drop = ratio < context_med * 0.4
+    ratio_drop = ratio < context_med * config.gain_drop_ratio
     not_zero = dif_peak >= 0.001
-    gain_a_mask = speech_strong & ratio_drop & not_zero & (frame_corr > 0.3)
-    gain_a_segs = _find_segments(gain_a_mask, hop_ms, min_frames=5)
+    gain_a_mask = speech_strong & ratio_drop & not_zero & (frame_corr > config.gain_drop_min_corr)
+    gain_a_segs = _find_segments(gain_a_mask, hop_ms, min_frames=min_frames)
 
-    # 깨짐 Type B: ratio 급락 + 120ms+ (gap 허용 병합, Type A 제외)
-    # Type A보다 엄격한 ratio 임계값(0.35)과 긴 최소 지속시간으로 오탐 방지
-    ratio_drop_strict = ratio < context_med * 0.35
+    # 깨짐 Type B: ratio 급락 + 장시간 지속 (gap 허용 병합, Type A 제외)
+    ratio_drop_strict = ratio < context_med * config.gain_drop_ratio_strict
     gain_b_base = speech_strong & ratio_drop_strict & not_zero & ~gain_a_mask
-    gain_b_segs = _find_segments_with_gap(gain_b_base, hop_ms, min_frames=12, max_gap=3)
+    min_frames_b = max(1, config.min_anomaly_b_ms // hop_ms)
+    gain_b_segs = _find_segments_with_gap(gain_b_base, hop_ms,
+                                          min_frames=min_frames_b,
+                                          max_gap=config.anomaly_gap_frames)
 
     # 묵음 직후 200ms 이내의 distortion 제외
     silence_ends = [e_ms for _, e_ms, _ in silence_segs]
@@ -276,6 +288,24 @@ def _find_segments_with_gap(
             segs.append((start * hop_ms, (last_active + 1) * hop_ms, length))
 
     return segs
+
+
+def _has_prior_dif_activity(
+    seg_start_ms: int, hop_ms: int,
+    pre_check_frames: int, dif_peak: np.ndarray,
+    threshold: float = 0.01,
+) -> bool:
+    """묵음 구간 직전에 dif 활성 신호가 있었는지 확인.
+
+    직전 200ms에서 dif_peak max가 threshold 미만이면
+    dif도 묵음이었던 자연 전환 구간으로 판단하여 False 반환.
+    """
+    seg_start_frame = int(seg_start_ms / hop_ms)
+    pre_start = max(0, seg_start_frame - pre_check_frames)
+    if pre_start >= seg_start_frame:
+        return True
+    prior_dif_peak_max = float(np.max(dif_peak[pre_start:seg_start_frame]))
+    return prior_dif_peak_max >= threshold
 
 
 def _compute_leakage(
