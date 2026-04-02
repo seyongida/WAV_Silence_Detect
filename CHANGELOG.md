@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.5.1] - 2026-04-03
+
+### 문서 동기화 (3.5.0 변경사항 반영)
+- `audio_anomaly_detector.py` docstring: `min_anomaly_a_ms`(80) 파라미터 추가, `gain_drop_ratio_strict` 기본값 0.30 반영, 알고리즘 요약에 3단계 오탐 필터 반영
+- `README.md`: 이상 검출 요약·기술 버전·쉬운 설명 버전 모두 3단계 오탐 필터, `min_anomaly_a_ms`, `gain_drop_ratio_strict=0.30` 반영
+
+## [3.5.0] - 2026-04-02
+
+### 깨짐(gain_drop) 오탐 방지 강화 — 8 Pair 정답지 달성
+- 깨짐 Type A/B에 3단계 오탐 필터 추가:
+  1. 직전 dif 활성도 검사 (200ms + 50ms 이중 확인)
+  2. 직전 ref 음성 존재 검사 (`_has_prior_ref_speech`)
+  3. 직전 안정 ratio 검사 (`_has_stable_prior_ratio`) — 직전 150ms에서 speech_strong이고 ratio > 0.5인 프레임 4개 이상 필요
+- `gain_drop_ratio_strict` 기본값 0.35 → 0.30으로 강화 (Type B ratio 임계값)
+- `min_anomaly_a_ms` 파라미터 신규 추가 (기본 80ms) — 깨짐 A 전용 최소 지속시간, 묵음(50ms)과 분리
+- GUI ParamPanel에 `Min A (ms)` 위젯 추가, `Drop ratio B` 기본값 동기화
+- `audio_anomaly_detector.py` 동일 로직/파라미터 동기화
+- 8개 Pair 전체 정답지 달성 (Pair1~4 정탐 유지, Pair5~8 오탐 0건)
+
 ## [3.4.3] - 2026-04-02
 
 ### README 이상 검출 로직 상세 문서 추가

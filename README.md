@@ -18,9 +18,9 @@ ref 대비 dif의 묵음과 음깨짐을 사람이 느끼는 수준으로 감지
 - 프레임별 ref/dif RMS, peak, correlation 계산 (20ms 프레임, 10ms 홉)
 - 주변 1초 구간의 ratio 중앙값 대비 급격한 하락 검출
 - `digital_zero` (묵음): dif peak < `zero_peak_threshold` + ref RMS > `speech_strong_rms`, 최소 `min_anomaly_ms`
-- `gain_drop` (깨짐 Type A): ratio < context_med × `gain_drop_ratio` + correlation > `gain_drop_min_corr`, 최소 `min_anomaly_ms`
+- `gain_drop` (깨짐 Type A): ratio < context_med × `gain_drop_ratio` + correlation > `gain_drop_min_corr`, 최소 `min_anomaly_a_ms`
 - `gain_drop` (깨짐 Type B): ratio < context_med × `gain_drop_ratio_strict` + `min_anomaly_b_ms` 이상 지속 (gap `anomaly_gap_frames` 허용)
-- 직전 200ms에서 dif 활성 신호가 없었던 자연 전환 구간은 오탐으로 제외
+- 3단계 오탐 필터 (묵음/깨짐 공통): 직전 dif 활성도(200ms+50ms 이중), 직전 ref 음성 존재, 직전 안정 ratio 검사
 - 묵음 직후 200ms 이내의 distortion은 복구 과정으로 제외
 
 ---
@@ -70,18 +70,35 @@ zero_mask:     dif_peak < zero_peak_threshold (0.0005)  ← dif는 거의 무음
 
 연속된 묵음 프레임을 구간으로 병합하고, `min_anomaly_ms`(50ms) = 5프레임 미만인 구간은 제거합니다.
 
-#### 4단계: 자연 전환 구간 오탐 제외
+#### 4단계: 자연 전환 구간 오탐 제외 (묵음/깨짐 공통 3단계 필터)
 
-묵음 구간 직전 200ms(20프레임)에서 dif_peak의 최대값을 확인합니다:
+검출된 묵음 및 깨짐 구간에 대해 3단계 오탐 필터를 적용합니다:
 
+필터 1 — 직전 dif 활성도 검사 (200ms + 50ms 이중 확인):
 ```
-prior_dif_peak_max = max(dif_peak[seg_start - 20 : seg_start])
-if prior_dif_peak_max < prior_activity_threshold (0.01):
-    → 제외 (직전에 dif도 묵음이었으므로 자연 전환 구간)
+prior_dif_peak_200ms = max(dif_peak[seg_start - 20 : seg_start])
+prior_dif_peak_50ms  = max(dif_peak[seg_start - 5 : seg_start])
+if prior_dif_peak_200ms < prior_activity_threshold (0.01):
+    → 제외 (직전 200ms에서 dif도 묵음)
+if prior_dif_peak_50ms < prior_activity_threshold (0.01):
+    → 제외 (직전 50ms에서 dif가 거의 무음 → 전환 구간)
 ```
 
-이 필터는 ref가 먼저 음성을 시작하고 dif가 전송 지연으로 아직 시작하지 않은 구간을 오탐에서 제외합니다.
-진짜 묵음은 직전에 dif에 활발한 음성(peak > 0.01)이 있다가 갑자기 dif만 무음이 되는 패턴입니다.
+필터 2 — 직전 ref 음성 존재 검사:
+```
+직전 200ms에서 speech_strong(ref_rms > speech_strong_rms) 프레임 비율
+if speech_count < len(prior_frames) // 2:
+    → 제외 (직전에 ref도 묵음이었으므로 음성 시작 과도 구간)
+```
+
+필터 3 — 직전 안정 ratio 검사 (깨짐 Type A/B에만 적용):
+```
+직전 150ms(15프레임)에서 speech_strong이고 ratio > 0.5인 프레임 수
+if stable_count < 4:
+    → 제외 (직전에 안정적인 전송 상태가 아니었으므로 과도 구간)
+```
+
+이 3단계 필터는 ref가 먼저 음성을 시작하고 dif가 전송 지연으로 아직 시작하지 않은 구간, 또는 음성 시작/끝의 과도 구간에서 발생하는 오탐을 제거합니다.
 
 #### 5단계: 깨짐 Type A (gain_drop, correlation 기반) 검출
 
@@ -94,7 +111,8 @@ not_zero:       dif_peak ≥ 0.001                         ← dif에 신호가 
 high_corr:      frame_corr > gain_drop_min_corr (0.3)    ← 파형 모양은 유사 (gain만 변화)
 ```
 
-연속 구간 병합 후 `min_anomaly_ms`(50ms) 미만 제거.
+연속 구간 병합 후 `min_anomaly_a_ms`(80ms) 미만 제거.
+4단계의 3단계 오탐 필터를 적용하여 전환 구간 오탐을 제거합니다.
 
 Type A는 "파형은 같은데 볼륨만 줄어든" 패턴을 잡습니다. correlation이 높다는 것은 신호의 형태가 보존되어 있다는 의미입니다.
 
@@ -104,13 +122,14 @@ Type A에 해당하지 않는 프레임 중 더 엄격한 조건을 적용합니
 
 ```
 speech_strong:      ref_rms > speech_strong_rms (0.03)
-ratio_drop_strict:  ratio < context_med × gain_drop_ratio_strict (0.35)  ← 더 극단적 하락
+ratio_drop_strict:  ratio < context_med × gain_drop_ratio_strict (0.30)  ← 더 극단적 하락
 not_zero:           dif_peak ≥ 0.001
 not_type_a:         Type A에 해당하지 않는 프레임
 ```
 
 gap 허용 병합: `anomaly_gap_frames`(3) 이하의 비이상 프레임을 무시하고 연속으로 취급합니다.
 `min_anomaly_b_ms`(120ms) = 12프레임 미만인 구간은 제거합니다.
+4단계의 3단계 오탐 필터를 적용하여 전환 구간 오탐을 제거합니다.
 
 Type B는 correlation이 낮아 파형 자체가 변형된 경우를 잡습니다. 오탐 방지를 위해 더 엄격한 ratio 임계값과 긴 최소 지속시간을 요구합니다.
 
@@ -143,10 +162,11 @@ for each gain_b_seg:
 | `speech_strong_rms` | 0.03 | ref 확실한 음성 판정 RMS |
 | `zero_peak_threshold` | 0.0005 | dif 디지털 제로 판정 peak |
 | `gain_drop_ratio` | 0.4 | 깨짐 A: 주변 대비 ratio 임계값 |
-| `gain_drop_ratio_strict` | 0.35 | 깨짐 B: 더 엄격한 ratio 임계값 |
+| `gain_drop_ratio_strict` | 0.30 | 깨짐 B: 더 엄격한 ratio 임계값 |
 | `gain_drop_min_corr` | 0.3 | 깨짐 A: 최소 파형 상관계수 |
 | `prior_activity_threshold` | 0.01 | 직전 dif 활성 판정 peak |
-| `min_anomaly_ms` | 50 | 묵음/깨짐 A 최소 지속 시간 (ms) |
+| `min_anomaly_ms` | 50 | 묵음 최소 지속 시간 (ms) |
+| `min_anomaly_a_ms` | 80 | 깨짐 A 최소 지속 시간 (ms) |
 | `min_anomaly_b_ms` | 120 | 깨짐 B 최소 지속 시간 (ms) |
 | `anomaly_gap_frames` | 3 | 깨짐 B gap 허용 프레임 수 |
 
@@ -212,16 +232,22 @@ for each gain_b_seg:
 
 단, 너무 짧은 구간(50ms 미만)은 무시합니다. 사람이 느끼기 어려운 수준이기 때문입니다.
 
-##### 5. "진짜 묵음"과 "자연스러운 전환"을 구분합니다
+##### 5. "진짜 이상"과 "자연스러운 전환"을 구분합니다
 
-여기서 중요한 필터가 하나 있습니다. 대화에서 말이 끝나고 잠시 쉬었다가 다시 말하는 구간을 생각해 보세요:
+여기서 중요한 3단계 필터가 있습니다. 대화에서 말이 끝나고 잠시 쉬었다가 다시 말하는 구간을 생각해 보세요:
 
 - 원본과 수신본 모두 조용하다가 → 원본이 먼저 말을 시작 → 수신본은 전송 지연으로 아직 조용
 - 이 구간은 "원본에 소리가 있는데 수신본이 조용한" 조건에 걸리지만, 실제로는 정상입니다
 
-이것을 구분하기 위해 묵음 구간 직전 0.2초를 확인합니다:
-- 직전에 수신본에도 활발한 소리가 있었다면 → 진짜 묵음 (갑자기 끊긴 것)
-- 직전에 수신본도 조용했다면 → 자연스러운 전환 구간 (오탐으로 제외)
+이것을 구분하기 위해 세 가지를 확인합니다:
+
+1. 직전 수신본 활성도: 직전 0.2초와 직전 0.05초 모두에서 수신본에 소리가 있었는지 확인합니다. 둘 중 하나라도 조용했으면 "자연 전환 구간"으로 제외합니다.
+
+2. 직전 원본 음성 존재: 직전 0.2초에서 원본에 확실한 말소리가 있었는지 확인합니다. 원본도 조용했다면 "음성 시작 과도 구간"으로 제외합니다.
+
+3. 직전 안정 전송 상태 (깨짐에만 적용): 직전 0.15초에서 에너지 비율이 0.5 이상인 프레임이 4개 이상인지 확인합니다. 안정적인 전송 상태가 아니었다면 "아직 안정화되지 않은 과도 구간"으로 제외합니다.
+
+이 필터들은 묵음과 깨짐 모두에 적용됩니다.
 
 ##### 6. 깨짐을 찾습니다 (두 가지 유형)
 
@@ -230,16 +256,19 @@ for each gain_b_seg:
 - 에너지 비율이 주변 대비 60% 이상 떨어졌다 (주변 중앙값 × 0.4 미만)
 - 수신본에 신호가 존재한다 (완전 무음은 아님)
 - 파형 유사도가 0.3 이상이다 (소리의 "모양"은 비슷하게 유지됨)
+- 최소 80ms 이상 지속되어야 한다
 
 비유하면, TV 볼륨을 갑자기 확 줄인 것과 같습니다. 프로그램 내용(파형 모양)은 같은데 소리만 작아진 상태입니다.
 
 깨짐 Type B — "파형 자체가 변형된" 경우:
 - Type A와 비슷하지만 파형 유사도 조건이 없는 대신, 더 엄격한 기준을 적용합니다
-- 에너지 비율이 주변 대비 65% 이상 떨어져야 합니다 (주변 중앙값 × 0.35 미만)
-- 최소 120ms 이상 지속되어야 합니다 (Type A는 50ms)
+- 에너지 비율이 주변 대비 70% 이상 떨어져야 합니다 (주변 중앙값 × 0.30 미만)
+- 최소 120ms 이상 지속되어야 합니다 (Type A는 80ms)
 - 중간에 3프레임(30ms) 이하의 정상 구간이 끼어 있어도 하나의 깨짐으로 연결합니다
 
 비유하면, TV 신호가 불안정해서 화면이 깨지는 것과 같습니다. 소리의 모양 자체가 달라졌기 때문에 더 확실한 증거(긴 지속시간, 큰 하락폭)를 요구합니다.
+
+깨짐도 5번의 3단계 필터를 거칩니다. 특히 "직전 안정 전송 상태" 필터가 중요합니다. 음성이 시작되는 과도 구간에서는 ref와 dif의 타이밍 차이로 에너지 비율이 일시적으로 낮아질 수 있는데, 이것은 정상적인 전송 특성이지 깨짐이 아닙니다.
 
 ##### 7. 묵음 직후의 "복구 구간"은 무시합니다
 

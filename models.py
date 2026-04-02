@@ -27,10 +27,11 @@ class AnalysisConfig:
     speech_strong_rms: float = 0.03         # 확실한 음성 구간 판정 RMS 임계값
     zero_peak_threshold: float = 0.0005     # dif 디지털 제로 판정 peak 임계값
     gain_drop_ratio: float = 0.4            # 깨짐 Type A ratio 임계값 (context_med 대비)
-    gain_drop_ratio_strict: float = 0.35    # 깨짐 Type B ratio 임계값 (더 엄격)
+    gain_drop_ratio_strict: float = 0.30    # 깨짐 Type B ratio 임계값 (더 엄격)
     gain_drop_min_corr: float = 0.3         # 깨짐 Type A 최소 correlation
     prior_activity_threshold: float = 0.01  # 직전 dif 활성 판정 peak 임계값
-    min_anomaly_ms: int = 50                # 묵음/깨짐 Type A 최소 지속 시간 (ms)
+    min_anomaly_ms: int = 50                # 묵음 최소 지속 시간 (ms)
+    min_anomaly_a_ms: int = 80              # 깨짐 Type A 최소 지속 시간 (ms)
     min_anomaly_b_ms: int = 120             # 깨짐 Type B 최소 지속 시간 (ms)
     anomaly_gap_frames: int = 3             # 깨짐 Type B gap 허용 프레임 수
 

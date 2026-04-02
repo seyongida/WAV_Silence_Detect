@@ -601,10 +601,11 @@ class ParamPanel(QWidget):
         self._speech_strong_rms = QDoubleSpinBox(); self._speech_strong_rms.setRange(0.001, 0.5); self._speech_strong_rms.setDecimals(3); self._speech_strong_rms.setSingleStep(0.005); self._speech_strong_rms.setValue(0.03)
         self._zero_peak_threshold = QDoubleSpinBox(); self._zero_peak_threshold.setRange(0.0001, 0.01); self._zero_peak_threshold.setDecimals(4); self._zero_peak_threshold.setSingleStep(0.0001); self._zero_peak_threshold.setValue(0.0005)
         self._gain_drop_ratio = QDoubleSpinBox(); self._gain_drop_ratio.setRange(0.1, 0.9); self._gain_drop_ratio.setDecimals(2); self._gain_drop_ratio.setSingleStep(0.05); self._gain_drop_ratio.setValue(0.4)
-        self._gain_drop_ratio_strict = QDoubleSpinBox(); self._gain_drop_ratio_strict.setRange(0.1, 0.9); self._gain_drop_ratio_strict.setDecimals(2); self._gain_drop_ratio_strict.setSingleStep(0.05); self._gain_drop_ratio_strict.setValue(0.35)
+        self._gain_drop_ratio_strict = QDoubleSpinBox(); self._gain_drop_ratio_strict.setRange(0.1, 0.9); self._gain_drop_ratio_strict.setDecimals(2); self._gain_drop_ratio_strict.setSingleStep(0.05); self._gain_drop_ratio_strict.setValue(0.30)
         self._gain_drop_min_corr = QDoubleSpinBox(); self._gain_drop_min_corr.setRange(0.0, 1.0); self._gain_drop_min_corr.setDecimals(2); self._gain_drop_min_corr.setSingleStep(0.05); self._gain_drop_min_corr.setValue(0.3)
         self._prior_activity = QDoubleSpinBox(); self._prior_activity.setRange(0.001, 0.1); self._prior_activity.setDecimals(3); self._prior_activity.setSingleStep(0.005); self._prior_activity.setValue(0.01)
         self._min_anomaly_ms = QSpinBox(); self._min_anomaly_ms.setRange(10, 500); self._min_anomaly_ms.setValue(50)
+        self._min_anomaly_a_ms = QSpinBox(); self._min_anomaly_a_ms.setRange(10, 500); self._min_anomaly_a_ms.setValue(80)
         self._min_anomaly_b_ms = QSpinBox(); self._min_anomaly_b_ms.setRange(10, 500); self._min_anomaly_b_ms.setValue(120)
         self._anomaly_gap_frames = QSpinBox(); self._anomaly_gap_frames.setRange(0, 10); self._anomaly_gap_frames.setValue(3)
 
@@ -620,11 +621,13 @@ class ParamPanel(QWidget):
                    "깨짐 A: 최소 파형 상관계수")
         _add_param(anomaly_grid, 2, 1, "Prior activity", self._prior_activity,
                    "직전 dif 활성 판정 peak (전환 구간 오탐 제외)")
-        _add_param(anomaly_grid, 3, 0, "Min anomaly (ms)", self._min_anomaly_ms,
-                   "묵음/깨짐 A 최소 지속 시간")
-        _add_param(anomaly_grid, 3, 1, "Min anomaly B (ms)", self._min_anomaly_b_ms,
+        _add_param(anomaly_grid, 3, 0, "Min silence (ms)", self._min_anomaly_ms,
+                   "묵음 최소 지속 시간")
+        _add_param(anomaly_grid, 3, 1, "Min A (ms)", self._min_anomaly_a_ms,
+                   "깨짐 A 최소 지속 시간")
+        _add_param(anomaly_grid, 4, 0, "Min B (ms)", self._min_anomaly_b_ms,
                    "깨짐 B 최소 지속 시간")
-        _add_param(anomaly_grid, 4, 0, "Gap frames B", self._anomaly_gap_frames,
+        _add_param(anomaly_grid, 4, 1, "Gap frames B", self._anomaly_gap_frames,
                    "깨짐 B gap 허용 프레임 수")
 
         layout.addWidget(anomaly_card)
@@ -646,6 +649,7 @@ class ParamPanel(QWidget):
             gain_drop_min_corr=self._gain_drop_min_corr.value(),
             prior_activity_threshold=self._prior_activity.value(),
             min_anomaly_ms=self._min_anomaly_ms.value(),
+            min_anomaly_a_ms=self._min_anomaly_a_ms.value(),
             min_anomaly_b_ms=self._min_anomaly_b_ms.value(),
             anomaly_gap_frames=self._anomaly_gap_frames.value(),
         )

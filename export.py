@@ -60,6 +60,7 @@ def save_json(result: AnalysisResult, path: str) -> None:
             "gain_drop_min_corr": result.config.gain_drop_min_corr,
             "prior_activity_threshold": result.config.prior_activity_threshold,
             "min_anomaly_ms": result.config.min_anomaly_ms,
+            "min_anomaly_a_ms": result.config.min_anomaly_a_ms,
             "min_anomaly_b_ms": result.config.min_anomaly_b_ms,
             "anomaly_gap_frames": result.config.anomaly_gap_frames,
         }

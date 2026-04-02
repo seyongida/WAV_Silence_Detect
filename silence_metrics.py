@@ -128,7 +128,18 @@ def detect_anomalies(
     ratio_drop = ratio < context_med * config.gain_drop_ratio
     not_zero = dif_peak >= 0.001
     gain_a_mask = speech_strong & ratio_drop & not_zero & (frame_corr > config.gain_drop_min_corr)
-    gain_a_segs = _find_segments(gain_a_mask, hop_ms, min_frames=min_frames)
+    min_frames_a = max(1, config.min_anomaly_a_ms // hop_ms)
+    gain_a_segs = _find_segments(gain_a_mask, hop_ms, min_frames=min_frames_a)
+
+    # 깨짐 Type A: 자연 전환 구간 오탐 제외
+    gain_a_segs = [
+        seg for seg in gain_a_segs
+        if _has_prior_dif_activity(seg[0], hop_ms, pre_check_frames, dif_peak,
+                                   config.prior_activity_threshold)
+        and _has_prior_ref_speech(seg[0], hop_ms, pre_check_frames, ref_rms,
+                                  config.speech_strong_rms)
+        and _has_stable_prior_ratio(seg[0], hop_ms, ratio, speech_strong)
+    ]
 
     # 깨짐 Type B: ratio 급락 + 장시간 지속 (gap 허용 병합, Type A 제외)
     ratio_drop_strict = ratio < context_med * config.gain_drop_ratio_strict
@@ -137,6 +148,16 @@ def detect_anomalies(
     gain_b_segs = _find_segments_with_gap(gain_b_base, hop_ms,
                                           min_frames=min_frames_b,
                                           max_gap=config.anomaly_gap_frames)
+
+    # 깨짐 Type B: 자연 전환 구간 오탐 제외
+    gain_b_segs = [
+        seg for seg in gain_b_segs
+        if _has_prior_dif_activity(seg[0], hop_ms, pre_check_frames, dif_peak,
+                                   config.prior_activity_threshold)
+        and _has_prior_ref_speech(seg[0], hop_ms, pre_check_frames, ref_rms,
+                                  config.speech_strong_rms)
+        and _has_stable_prior_ratio(seg[0], hop_ms, ratio, speech_strong)
+    ]
 
     # 묵음 직후 200ms 이내의 distortion 제외
     silence_ends = [e_ms for _, e_ms, _ in silence_segs]
@@ -295,17 +316,85 @@ def _has_prior_dif_activity(
     pre_check_frames: int, dif_peak: np.ndarray,
     threshold: float = 0.01,
 ) -> bool:
-    """묵음 구간 직전에 dif 활성 신호가 있었는지 확인.
+    """묵음/깨짐 구간 직전에 dif 활성 신호가 있었는지 확인.
 
     직전 200ms에서 dif_peak max가 threshold 미만이면
     dif도 묵음이었던 자연 전환 구간으로 판단하여 False 반환.
+    추가로 직전 50ms(5프레임)에서도 dif_peak max를 확인하여
+    직전 순간에 dif가 거의 무음이면 전환 구간으로 판단.
     """
     seg_start_frame = int(seg_start_ms / hop_ms)
     pre_start = max(0, seg_start_frame - pre_check_frames)
     if pre_start >= seg_start_frame:
         return True
+    # 직전 200ms 전체 확인
     prior_dif_peak_max = float(np.max(dif_peak[pre_start:seg_start_frame]))
-    return prior_dif_peak_max >= threshold
+    if prior_dif_peak_max < threshold:
+        return False
+    # 직전 50ms(5프레임) 확인: 직전 순간에 dif가 거의 무음이면 전환 구간
+    short_pre = max(0, seg_start_frame - 5)
+    if short_pre < seg_start_frame:
+        short_peak = float(np.max(dif_peak[short_pre:seg_start_frame]))
+        if short_peak < threshold:
+            return False
+    return True
+
+
+def _has_prior_ref_speech(
+    seg_start_ms: int, hop_ms: int,
+    pre_check_frames: int, ref_rms: np.ndarray,
+    speech_strong_rms: float,
+) -> bool:
+    """이상 구간 직전에 ref에 확실한 음성이 있었는지 확인.
+
+    직전 200ms에서 speech_strong(ref_rms > speech_strong_rms)인 프레임이
+    절반 미만이면 ref도 묵음→음성 전환 구간으로 판단하여 False 반환.
+    """
+    seg_start_frame = int(seg_start_ms / hop_ms)
+    pre_start = max(0, seg_start_frame - pre_check_frames)
+    if pre_start >= seg_start_frame:
+        return True
+    prior_ref = ref_rms[pre_start:seg_start_frame]
+    speech_count = int(np.sum(prior_ref > speech_strong_rms))
+    return speech_count >= len(prior_ref) // 2
+
+
+def _is_near_speech_onset(
+    seg_start_ms: int, hop_ms: int,
+    speech_strong: np.ndarray,
+) -> bool:
+    """이상 구간이 음성 시작(onset) 과도 구간 근처인지 확인.
+
+    직전 500ms(50프레임) 이내에 speech_strong이 False→True로 전환된
+    지점이 있으면 음성 시작 과도 구간으로 판단하여 True 반환.
+    """
+    seg_start_frame = int(seg_start_ms / hop_ms)
+    check_start = max(1, seg_start_frame - 50)
+    for i in range(check_start, seg_start_frame):
+        if speech_strong[i] and not speech_strong[i - 1]:
+            return True
+    return False
+
+
+def _has_stable_prior_ratio(
+    seg_start_ms: int, hop_ms: int,
+    ratio: np.ndarray, speech_strong: np.ndarray,
+) -> bool:
+    """이상 구간 직전에 안정적인 ratio가 있었는지 확인.
+
+    직전 200ms(20프레임)에서 speech_strong이고 ratio > 0.5인 프레임이
+    5개 이상이면 안정적인 전송 상태였다고 판단하여 True 반환.
+    그렇지 않으면 음성 시작 과도 구간으로 판단하여 False 반환.
+    """
+    seg_start_frame = int(seg_start_ms / hop_ms)
+    pre_start = max(0, seg_start_frame - 15)
+    if pre_start >= seg_start_frame:
+        return True
+    stable_count = 0
+    for i in range(pre_start, seg_start_frame):
+        if speech_strong[i] and ratio[i] > 0.5:
+            stable_count += 1
+    return stable_count >= 4
 
 
 def _compute_leakage(
